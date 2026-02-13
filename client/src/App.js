@@ -10,6 +10,10 @@ function App() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  // ✅ IMPORTANT: your deployed backend URL
+  const API_URL =
+    "https://ai-resume-screening-system-fs4i.onrender.com/api/analyze";
+
   const handleAnalyze = async () => {
     if (!file || !job) {
       alert("Upload resume and enter job description");
@@ -23,7 +27,7 @@ function App() {
     formData.append("job", job);
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/api/analyze", {
+      const response = await fetch(API_URL, {
         method: "POST",
         body: formData,
       });
@@ -31,6 +35,7 @@ function App() {
       const data = await response.json();
       setResult(data);
     } catch (error) {
+      console.error(error);
       alert("Backend not reachable");
     }
 
