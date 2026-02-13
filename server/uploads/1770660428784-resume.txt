@@ -1,0 +1,28 @@
+John Doe
+Email: john.doe@example.com
+Phone: +91-9876543210
+LinkedIn: linkedin.com/in/johndoe
+
+Professional Summary:
+Highly skilled Python developer with experience in backend development, database management, and web applications.
+
+Technical Skills:
+- Programming Languages: Python, JavaScript
+- Web Development: React, Node.js, Express
+- Database: MongoDB, MySQL
+- Tools: Git, Docker, Postman
+
+Work Experience:
+1. Backend Developer at TechSolutions (2023-Present)
+   - Developed RESTful APIs using Python and Flask
+   - Integrated MongoDB and MySQL databases
+   - Implemented authentication and authorization
+
+2. Full Stack Intern at WebWorks (2022-2023)
+   - Built React frontend with Node.js backend
+   - Connected frontend with MongoDB database
+   - Optimized application performance
+
+Education:
+Bachelor of Technology in Computer Science
+XYZ University, 2020-2024
