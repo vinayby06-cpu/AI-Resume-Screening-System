@@ -8,8 +8,16 @@ const upload = multer({ dest: "uploads/" });
 
 console.log("🔥 NEW SKILL-ONLY BACKEND LOADED");
 
+/* ================= MIDDLEWARE ================= */
 
-app.use(cors());
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type"],
+  })
+);
+
 app.use(express.json());
 
 /* 🔒 ONLY THESE ARE SKILLS */
@@ -26,7 +34,7 @@ const SKILLS = [
   "html",
   "css",
   "django",
-  "flask"
+  "flask",
 ];
 
 /* ✅ Clean text */
@@ -37,11 +45,15 @@ function clean(text) {
 /* ✅ Extract ONLY skills */
 function extractSkills(text) {
   const cleaned = clean(text);
-  return SKILLS.filter(skill => cleaned.includes(skill));
+  return SKILLS.filter((skill) => cleaned.includes(skill));
 }
 
-/* ================= API ================= */
+/* ================= HEALTH CHECK ================= */
+app.get("/", (req, res) => {
+  res.send("✅ AI Resume Screening Backend Running");
+});
 
+/* ================= API ================= */
 app.post("/api/analyze", upload.single("resume"), (req, res) => {
   try {
     if (!req.file) {
@@ -54,12 +66,12 @@ app.post("/api/analyze", upload.single("resume"), (req, res) => {
     const resumeSkills = extractSkills(resumeText);
     const jobSkills = extractSkills(jobText);
 
-    const matchedSkills = jobSkills.filter(skill =>
+    const matchedSkills = jobSkills.filter((skill) =>
       resumeSkills.includes(skill)
     );
 
-    const missingSkills = jobSkills.filter(skill =>
-      !resumeSkills.includes(skill)
+    const missingSkills = jobSkills.filter(
+      (skill) => !resumeSkills.includes(skill)
     );
 
     const score =
@@ -67,20 +79,24 @@ app.post("/api/analyze", upload.single("resume"), (req, res) => {
         ? 0
         : Math.round((matchedSkills.length / jobSkills.length) * 100);
 
+    // ✅ cleanup uploaded file
     fs.unlinkSync(req.file.path);
 
     return res.json({
       score,
       matchedSkills,
-      missingSkills
+      missingSkills,
     });
-
   } catch (err) {
-    console.error(err);
+    console.error("❌ Analysis error:", err);
     return res.status(500).json({ error: "Resume analysis failed" });
   }
 });
 
-app.listen(5000, () => {
-  console.log("Backend running on port 5000");
+/* ================= SERVER ================= */
+
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+  console.log(`🚀 Backend running on port ${PORT}`);
 });
