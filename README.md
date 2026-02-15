@@ -50,7 +50,7 @@ An intelligent web application that analyzes resumes against job descriptions an
 
 ## 🚀 Live Demo
 
-🔗 https://ai-resume-screening-system-fs4i.onrender.com
+https://ai-resume-screening-system-1-am2l.onrender.com
 
 ---
 
