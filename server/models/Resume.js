@@ -1,24 +1,14 @@
 const mongoose = require("mongoose");
 
-/*
-  Schema = structure of one resume result
-*/
-const ResumeSchema = new mongoose.Schema({
-  score: {
-    type: Number,
-    required: true
+const resumeSchema = new mongoose.Schema(
+  {
+    jobSeekerId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    fileUrl: { type: String, required: true }, // local path or cloud url
+    fileName: { type: String },
+    extractedText: { type: String }, // if you store parsed text
+    skills: [{ type: String }],      // parsed skills
   },
-  matchedSkills: {
-    type: [String],
-    required: true
-  },
-  date: {
-    type: Date,
-    default: Date.now
-  }
-});
+  { timestamps: true }
+);
 
-/*
-  Model = tool to interact with MongoDB
-*/
-module.exports = mongoose.model("Resume", ResumeSchema);
+module.exports = mongoose.model("Resume", resumeSchema);
