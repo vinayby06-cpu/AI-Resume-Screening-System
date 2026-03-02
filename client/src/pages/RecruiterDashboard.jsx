@@ -2,7 +2,12 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
 
-const API = "http://localhost:5000";
+// ✅ Use env in deploy, fallback to Render backend, then localhost for local dev
+const API =
+  process.env.REACT_APP_API_BASE ||
+  (window.location.hostname === "localhost"
+    ? "http://localhost:5000"
+    : "https://ai-resume-screening-system-vinay.onrender.com");
 
 export default function RecruiterDashboard() {
   // ===== Router =====
@@ -38,6 +43,8 @@ export default function RecruiterDashboard() {
 
   // ----------------- Helpers -----------------
   const authHeader = useMemo(() => {
+    // ✅ if token missing, avoid sending "Bearer null"
+    if (!token) return {};
     return { headers: { Authorization: `Bearer ${token}` } };
   }, [token]);
 
@@ -51,6 +58,8 @@ export default function RecruiterDashboard() {
   // ✅ Logout
   const handleLogout = () => {
     localStorage.removeItem("token");
+    localStorage.removeItem("role");
+    localStorage.removeItem("user");
     navigate("/login");
   };
 
@@ -184,7 +193,7 @@ export default function RecruiterDashboard() {
         padding: 24,
         maxWidth: 1100,
         margin: "0 auto",
-        fontSize: 14, // ✅ Normal base font size
+        fontSize: 14,
         fontFamily: "Arial, sans-serif",
       }}
     >
@@ -407,7 +416,7 @@ const input = (w = "100%") => ({
   borderRadius: 10,
   border: "1px solid #ddd",
   outline: "none",
-  fontSize: 14, // ✅ normal
+  fontSize: 14,
 });
 
 const btn = (variant) => {
@@ -417,7 +426,7 @@ const btn = (variant) => {
     border: "1px solid #ddd",
     cursor: "pointer",
     background: "#f7f7f7",
-    fontSize: 14, // ✅ normal
+    fontSize: 14,
   };
   if (variant === "primary")
     return { ...base, background: "#111", color: "#fff", border: "1px solid #111" };
@@ -456,11 +465,11 @@ const th = () => ({
   borderBottom: "1px solid #ddd",
   padding: "10px 8px",
   background: "#fafafa",
-  fontSize: 14, // ✅ normal
+  fontSize: 14,
 });
 
 const td = () => ({
   borderBottom: "1px solid #eee",
   padding: "10px 8px",
-  fontSize: 14, // ✅ normal
+  fontSize: 14,
 });

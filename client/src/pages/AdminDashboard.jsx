@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:5000";
+// ✅ Use env in deploy, fallback to Render backend, then localhost for local dev
+const API_BASE =
+  process.env.REACT_APP_API_BASE ||
+  (window.location.hostname === "localhost"
+    ? "http://localhost:5000"
+    : "https://ai-resume-screening-system-vinay.onrender.com");
+
 const getToken = () => localStorage.getItem("token") || "";
 
 async function apiFetch(path, options = {}) {
@@ -8,9 +14,13 @@ async function apiFetch(path, options = {}) {
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: "include",
     headers: {
       Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      // ✅ only set JSON content-type when sending JSON body
+      ...(options.body && !(options.body instanceof FormData)
+        ? { "Content-Type": "application/json" }
+        : {}),
       ...(options.headers || {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
@@ -139,6 +149,17 @@ export default function AdminDashboard() {
       if (selectedTab === "jobs") await loadJobs();
       if (selectedTab === "resumes") await loadResumes();
       if (selectedTab === "logs") await loadLogs();
+
+      // ✅ (optional) If you have backend route for settings
+      if (selectedTab === "settings") {
+        // If your server has GET /api/admin/settings, you can enable this:
+        // const s = await apiFetch("/api/admin/settings");
+        // setSettings({
+        //   allowRegistration: !!s.allowRegistration,
+        //   enableResumeUpload: !!s.enableResumeUpload,
+        //   maintenanceMode: !!s.maintenanceMode,
+        // });
+      }
     } catch (e) {
       showToast(e.message || "Something went wrong");
     } finally {
@@ -444,7 +465,10 @@ export default function AdminDashboard() {
                       </td>
                       <td style={styles.td}>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <button style={styles.btn} onClick={() => updateJobStatus(j._id, "approved")}>
+                          <button
+                            style={styles.btn}
+                            onClick={() => updateJobStatus(j._id, "approved")}
+                          >
                             Approve
                           </button>
                           <button

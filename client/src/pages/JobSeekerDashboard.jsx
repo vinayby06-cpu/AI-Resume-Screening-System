@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:5000";
+// ✅ Use env in deploy, fallback to Render backend, then localhost for local dev
+const API_BASE =
+  process.env.REACT_APP_API_BASE ||
+  (window.location.hostname === "localhost"
+    ? "http://localhost:5000"
+    : "https://ai-resume-screening-system-vinay.onrender.com");
 
 const getToken = () => localStorage.getItem("token") || "";
 const getUser = () => {
@@ -17,6 +22,7 @@ async function apiFetch(path, options = {}) {
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: "include",
     headers: {
       Accept: "application/json",
       ...(options.body && !(options.body instanceof FormData)
@@ -32,6 +38,14 @@ async function apiFetch(path, options = {}) {
     data = await res.json();
   } catch {
     data = { message: "Server returned non-JSON response" };
+  }
+
+  // ✅ Auto-logout on 401
+  if (res.status === 401) {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    window.location.href = "/login";
+    throw new Error("Session expired. Please login again.");
   }
 
   if (!res.ok) throw new Error(data?.message || "Request failed");
@@ -96,6 +110,12 @@ export default function JobSeekerDashboard() {
   };
 
   useEffect(() => {
+    // ✅ if no token, go login
+    if (!getToken()) {
+      window.location.href = "/login";
+      return;
+    }
+
     loadJobs().catch(() => {});
     loadHistory().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -121,11 +141,26 @@ export default function JobSeekerDashboard() {
 
       const res = await fetch(`${API_BASE}/api/jobseeker/analyze`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: "include",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,
       });
 
-      const data = await res.json();
+      // ✅ safe JSON parse
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = { message: "Server returned non-JSON response" };
+      }
+
+      if (res.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        window.location.href = "/login";
+        throw new Error("Session expired. Please login again.");
+      }
+
       if (!res.ok) throw new Error(data?.message || "Analyze failed");
 
       setAnalysisId(data.analysisId || data._id || null);
@@ -181,8 +216,16 @@ export default function JobSeekerDashboard() {
     try {
       const token = getToken();
       const res = await fetch(`${API_BASE}/api/jobseeker/report/${analysisId}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: "include",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
+
+      if (res.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        window.location.href = "/login";
+        throw new Error("Session expired. Please login again.");
+      }
 
       if (!res.ok) throw new Error("Failed to download report");
 
@@ -677,7 +720,6 @@ const styles = {
     justifyContent: "flex-end",
   },
 
-  // ✅ SIMPLE HEADING STYLE
   h1: { margin: 0, fontSize: 18, fontWeight: 600 },
   h2: { marginTop: 0, marginBottom: 12, fontSize: 15, fontWeight: 600 },
   h3: { margin: "0 0 10px", fontSize: 14, fontWeight: 600 },
