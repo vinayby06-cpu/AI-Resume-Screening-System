@@ -2,6 +2,13 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 
+// ✅ Works in BOTH local + deployed (even if Netlify env var is missing)
+const API =
+  process.env.REACT_APP_API_BASE ||
+  (window.location.hostname === "localhost"
+    ? "http://localhost:5000"
+    : "https://ai-resume-screening-system-vinay.onrender.com");
+
 function Register() {
   const navigate = useNavigate();
 
@@ -28,10 +35,10 @@ function Register() {
     }
 
     try {
-      const res = await axios.post(
-        "http://localhost:5000/api/auth/register",
-        formData
-      );
+      const res = await axios.post(`${API}/api/auth/register`, formData, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 20000,
+      });
 
       alert(res.data.message);
 
@@ -43,12 +50,13 @@ function Register() {
       } else {
         navigate("/jobseeker-dashboard");
       }
-
     } catch (error) {
       console.error(error);
-      alert(
-        error.response?.data?.message || "Registration failed ❌"
-      );
+      const msg =
+        error?.response?.data?.message ||
+        (error?.code === "ECONNABORTED" ? "Request timeout. Try again." : null) ||
+        "Registration failed ❌";
+      alert(msg);
     }
   };
 

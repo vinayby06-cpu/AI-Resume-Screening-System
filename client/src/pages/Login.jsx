@@ -2,7 +2,12 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import axios from "axios";
 
-const API = "http://localhost:5000";
+// ✅ Works in BOTH local + deployed (even if Netlify env var is missing)
+const API =
+  process.env.REACT_APP_API_BASE ||
+  (window.location.hostname === "localhost"
+    ? "http://localhost:5000"
+    : "https://ai-resume-screening-system-vinay.onrender.com");
 
 export default function Login() {
   const navigate = useNavigate();
@@ -23,7 +28,10 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const res = await axios.post(`${API}/api/auth/login`, formData);
+      const res = await axios.post(`${API}/api/auth/login`, formData, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 20000,
+      });
 
       localStorage.setItem("token", res.data.token);
       localStorage.setItem("role", res.data.user.role);
@@ -34,7 +42,11 @@ export default function Login() {
       else if (role === "recruiter") navigate("/recruiter-dashboard");
       else navigate("/jobseeker-dashboard");
     } catch (err) {
-      alert(err?.response?.data?.message || "Login failed ❌");
+      const msg =
+        err?.response?.data?.message ||
+        (err?.code === "ECONNABORTED" ? "Request timeout. Try again." : null) ||
+        "Login failed ❌";
+      alert(msg);
     } finally {
       setLoading(false);
     }
@@ -80,7 +92,10 @@ export default function Login() {
 
         <p style={styles.footerText}>
           Forgot password?{" "}
-          <span style={styles.forgotText} onClick={() => alert("Add Forgot Password Page")}>
+          <span
+            style={styles.forgotText}
+            onClick={() => alert("Add Forgot Password Page")}
+          >
             Click here
           </span>
         </p>
@@ -93,7 +108,7 @@ const styles = {
   container: {
     height: "100vh",
     width: "100%",
-    backgroundColor: "#ffffff", // ✅ White background screen
+    backgroundColor: "#ffffff",
     display: "flex",
     justifyContent: "center",
     alignItems: "center",
@@ -135,7 +150,6 @@ const styles = {
     outline: "none",
   },
 
-  // ✅ Login Button
   button: {
     padding: "12px",
     borderRadius: "8px",
@@ -148,7 +162,6 @@ const styles = {
     transition: "0.3s ease",
   },
 
-  // ✅ Register Button (New Styled Button Link)
   registerBtn: {
     display: "block",
     padding: "12px",
