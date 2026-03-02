@@ -13,13 +13,20 @@ const fs = require("fs");
 const app = express();
 
 // ================== MIDDLEWARE ==================
-app.use(express.json());
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: [
+      "http://localhost:3000",
+      "http://localhost:3001", // ✅ add this (your current frontend)
+      "https://ai-resume-screening-system-by.onrender.com",
+    ],
     credentials: true,
   })
 );
+
+// ✅ ✅ FIX (MOST IMPORTANT): body parsers (must be BEFORE routes)
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 // Serve uploads
 app.use("/uploads", express.static("uploads"));
@@ -179,7 +186,7 @@ app.get("/", (req, res) => {
 // ---------- REGISTER ----------
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role } = req.body || {}; // ✅ safe
 
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: "All fields are required" });
@@ -210,10 +217,12 @@ app.post("/api/auth/register", async (req, res) => {
 // ---------- LOGIN ----------
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    // ✅ safe destructure so it never crashes
+    const { email, password } = req.body || {};
 
-    if (!email || !password)
+    if (!email || !password) {
       return res.status(400).json({ message: "Email and password are required" });
+    }
 
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
@@ -243,7 +252,7 @@ app.post("/api/auth/login", async (req, res) => {
 // ================== JOBS ==================
 app.post("/api/jobs", verifyToken, requireRole(["recruiter"]), async (req, res) => {
   try {
-    const { title, skills } = req.body;
+    const { title, skills } = req.body || {};
     if (!title) return res.status(400).json({ message: "Job title required" });
 
     const job = await Job.create({
@@ -318,7 +327,7 @@ app.get("/api/recruiter/candidates", verifyToken, requireRole(["recruiter"]), as
 // ================== JOBSEEKER ANALYZE ==================
 app.post("/api/jobseeker/analyze", verifyToken, upload.single("resume"), async (req, res) => {
   try {
-    const { jobId, jobDescription } = req.body;
+    const { jobId, jobDescription } = req.body || {};
 
     let jobTitle = "";
     let requiredSkills = [];
@@ -402,7 +411,7 @@ app.get("/api/jobseeker/history", verifyToken, requireRole(["jobseeker", "admin"
 
 app.post("/api/jobseeker/apply", verifyToken, requireRole(["jobseeker", "admin"]), async (req, res) => {
   try {
-    const { analysisId } = req.body;
+    const { analysisId } = req.body || {};
     if (!analysisId) return res.status(400).json({ message: "analysisId is required" });
 
     const record = await Analysis.findById(analysisId);
@@ -521,7 +530,7 @@ app.patch("/api/jobseeker/notifications/:id/read", verifyToken, requireRole(["jo
 // ================== RECRUITER: UPDATE CANDIDATE STATUS + SEND NOTIFICATION ==================
 app.put("/api/candidates/:id", verifyToken, requireRole(["recruiter", "admin"]), async (req, res) => {
   try {
-    const { status } = req.body;
+    const { status } = req.body || {};
     if (!status) return res.status(400).json({ message: "Status is required" });
 
     const candidate = await Candidate.findById(req.params.id);
@@ -605,7 +614,7 @@ app.get("/api/admin/jobs", verifyToken, requireRole(["admin"]), async (req, res)
 
 app.patch("/api/admin/jobs/:id/status", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
-    const { status } = req.body;
+    const { status } = req.body || {};
 
     if (!["pending", "approved", "rejected"].includes(status)) {
       return res.status(400).json({ message: "Invalid status" });
@@ -670,7 +679,7 @@ app.get("/api/admin/settings", verifyToken, requireRole(["admin"]), async (req, 
 
 app.put("/api/admin/settings", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
-    const { allowRegistration, enableResumeUpload, maintenanceMode } = req.body;
+    const { allowRegistration, enableResumeUpload, maintenanceMode } = req.body || {};
 
     let s = await Settings.findOne();
     if (!s) s = await Settings.create({});
