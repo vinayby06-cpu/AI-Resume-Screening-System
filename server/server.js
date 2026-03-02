@@ -17,8 +17,9 @@ app.use(
   cors({
     origin: [
       "http://localhost:3000",
-      "http://localhost:3001", // ✅ add this (your current frontend)
+      "http://localhost:3001",
       "https://ai-resume-screening-system-by.onrender.com",
+      "https://ai-resume-screening-system.netlify.app"   // ✅ ADD THIS LINE
     ],
     credentials: true,
   })

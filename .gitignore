@@ -4,3 +4,4 @@ server/node_modules/
 build/
 dist/
 .env
+server/uploads/
