@@ -274,39 +274,28 @@ app.post("/api/auth/register", async (req, res) => {
 // ---------- LOGIN ----------
 app.post("/api/auth/login", async (req, res) => {
   try {
-    // ✅ FIX: normalize inputs (trim + lowercase email)
     let { email, password } = req.body || {};
     email = String(email || "").trim().toLowerCase();
     password = String(password || "");
+
+    console.log("LOGIN TRY:", { email, hasPassword: !!password });
 
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password are required" });
     }
 
-    const user = await User.findOne({ email }); // ✅ lookup normalized
+    const user = await User.findOne({ email });
+    console.log("USER FOUND:", !!user);
+
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
     const match = await bcrypt.compare(password, user.password);
+    console.log("PASSWORD MATCH:", match);
+
     if (!match) return res.status(400).json({ message: "Invalid credentials" });
 
-    const token = jwt.sign(
-      { id: user._id.toString(), role: user.role, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
+    // (rest same...)
 
-    await Log.create({ level: "info", message: "User login", actor: user.email });
-
-    return res.json({
-      message: "Login successful",
-      token,
-      user: { _id: user._id, name: user.name, email: user.email, role: user.role },
-    });
-  } catch (err) {
-    console.error("LOGIN ERROR:", err);
-    return res.status(500).json({ message: "Login failed" });
-  }
-});
 
 // ================== PUBLIC JOBS (JOBSEEKER DROPDOWN) ==================
 app.get("/api/jobs", async (req, res) => {
