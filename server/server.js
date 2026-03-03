@@ -19,6 +19,9 @@ if (!process.env.MONGO_URI) {
 if (!process.env.JWT_SECRET) {
   console.error("❌ JWT_SECRET is missing in environment variables (LOGIN WILL FAIL)");
 }
+if (!process.env.RESET_KEY) {
+  console.warn("⚠️ RESET_KEY is missing (password reset API will be disabled)");
+}
 
 // ================== MIDDLEWARE ==================
 // ✅ body parsers FIRST (so req.body works)
@@ -272,7 +275,6 @@ app.post("/api/auth/register", async (req, res) => {
 });
 
 // ---------- LOGIN ----------
-// ---------- LOGIN ----------
 app.post("/api/auth/login", async (req, res) => {
   try {
     let { email, password } = req.body || {};
@@ -314,6 +316,40 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// ---------- RESET PASSWORD (TEMP / ADMIN USE) ----------
+app.post("/api/auth/reset-password", async (req, res) => {
+  try {
+    if (!process.env.RESET_KEY) {
+      return res.status(400).json({ message: "RESET_KEY not configured" });
+    }
+
+    let { email, newPassword, key } = req.body || {};
+    email = String(email || "").trim().toLowerCase();
+    newPassword = String(newPassword || "");
+    key = String(key || "");
+
+    if (!email || !newPassword || !key) {
+      return res.status(400).json({ message: "email, newPassword, key are required" });
+    }
+
+    if (key !== process.env.RESET_KEY) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    await Log.create({ level: "info", message: "Password reset", actor: email });
+
+    return res.json({ message: "Password reset successful" });
+  } catch (err) {
+    console.error("RESET PASSWORD ERROR:", err);
+    return res.status(500).json({ message: "Reset failed" });
+  }
+});
 
 // ================== PUBLIC JOBS (JOBSEEKER DROPDOWN) ==================
 app.get("/api/jobs", async (req, res) => {
@@ -407,6 +443,35 @@ app.get(
 );
 
 // ================== RECRUITER ROUTES ==================
+
+// recruiter analytics / stats (fix "API route not found" on dashboard)
+app.get(
+  "/api/recruiter/stats",
+  verifyToken,
+  requireRole(["recruiter"]),
+  async (req, res) => {
+    try {
+      const recruiterEmail = req.user?.email || "";
+
+      const totalJobs = await Job.countDocuments({ postedBy: recruiterEmail });
+      const totalCandidates = await Candidate.countDocuments({ recruiterEmail });
+
+      const avg = await Analysis.aggregate([
+        { $match: { recruiterEmail } },
+        { $group: { _id: null, avgScore: { $avg: "$atsScore" } } },
+      ]);
+
+      return res.json({
+        totalJobs,
+        totalCandidates,
+        averageATS: Number(avg[0]?.avgScore || 0).toFixed(1),
+      });
+    } catch (err) {
+      console.error("RECRUITER STATS ERROR:", err);
+      return res.status(500).json({ message: "Failed to load stats" });
+    }
+  }
+);
 
 // create job (pending by default)
 app.post(
