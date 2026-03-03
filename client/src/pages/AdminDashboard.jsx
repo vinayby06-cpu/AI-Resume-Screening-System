@@ -1,20 +1,27 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 // ✅ Use env in deploy, fallback to Render backend, then localhost for local dev
-const API_BASE =
+const API_BASE_RAW =
   process.env.REACT_APP_API_BASE ||
   (window.location.hostname === "localhost"
     ? "http://localhost:5000"
     : "https://ai-resume-screening-system-vinay.onrender.com");
 
+// ✅ normalize (avoid double slashes)
+const API_BASE = (API_BASE_RAW || "").replace(/\/+$/, "");
+
 const getToken = () => localStorage.getItem("token") || "";
 
+// ✅ API helper (robust: handles JSON + non-JSON + gives better errors)
 async function apiFetch(path, options = {}) {
   const token = getToken();
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const url = `${API_BASE}${path}`;
+
+  const res = await fetch(url, {
     ...options,
-    credentials: "include",
+    // ✅ IMPORTANT: you are using JWT, not cookies -> remove credentials
+    // credentials: "include",
     headers: {
       Accept: "application/json",
       // ✅ only set JSON content-type when sending JSON body
@@ -26,13 +33,32 @@ async function apiFetch(path, options = {}) {
     },
   });
 
+  // ✅ Try JSON first, fallback to text
   let data = null;
+  let rawText = "";
+
+  const contentType = res.headers.get("content-type") || "";
+
   try {
-    data = await res.json();
-  } catch (e) {
-    data = { message: "Server returned non-JSON response" };
+    if (contentType.includes("application/json")) {
+      data = await res.json();
+    } else {
+      rawText = await res.text();
+      // try parse as JSON anyway (some servers send JSON without correct header)
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = null;
+      }
+    }
+  } catch {
+    // if parsing fails
+    try {
+      rawText = rawText || (await res.text());
+    } catch {}
   }
 
+  // ✅ Auto logout on 401
   if (res.status === 401) {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
@@ -40,7 +66,43 @@ async function apiFetch(path, options = {}) {
     return Promise.reject(new Error("Session expired. Please login again."));
   }
 
-  if (!res.ok) throw new Error(data?.message || "Request failed");
+  // ✅ If not OK, build a helpful error message
+  if (!res.ok) {
+    const msgFromJson =
+      data?.message ||
+      data?.error ||
+      (typeof data === "string" ? data : "");
+
+    // If backend returned HTML/text, show a clean message + log details
+    const msg =
+      msgFromJson ||
+      (rawText
+        ? `Non-JSON response (${res.status}). Check backend route/CORS.`
+        : `Request failed (${res.status})`);
+
+    console.error("API ERROR:", {
+      url,
+      status: res.status,
+      statusText: res.statusText,
+      contentType,
+      rawPreview: (rawText || "").slice(0, 200),
+      json: data,
+    });
+
+    throw new Error(msg);
+  }
+
+  // ✅ If ok but still no JSON
+  if (data === null) {
+    console.error("NON-JSON OK RESPONSE:", {
+      url,
+      status: res.status,
+      contentType,
+      rawPreview: (rawText || "").slice(0, 200),
+    });
+    throw new Error("Server returned non-JSON response");
+  }
+
   return data;
 }
 
