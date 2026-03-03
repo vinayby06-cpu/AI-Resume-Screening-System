@@ -31,7 +31,7 @@ const allowedOrigins = new Set([
   "http://localhost:3001",
   "https://ai-resume-screening-system.netlify.app",
   // Add your Render FRONTEND here only if you really have a separate frontend service:
-  // "https://ai-resume-screening-system-by.onrender.com",
+  "https://ai-resume-screening-system-vinay.onrender.com",
 ]);
 
 function isAllowedOrigin(origin) {
