@@ -272,6 +272,7 @@ app.post("/api/auth/register", async (req, res) => {
 });
 
 // ---------- LOGIN ----------
+// ---------- LOGIN ----------
 app.post("/api/auth/login", async (req, res) => {
   try {
     let { email, password } = req.body || {};
@@ -294,7 +295,24 @@ app.post("/api/auth/login", async (req, res) => {
 
     if (!match) return res.status(400).json({ message: "Invalid credentials" });
 
-    // (rest same...)
+    const token = jwt.sign(
+      { id: user._id.toString(), role: user.role, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    await Log.create({ level: "info", message: "User login", actor: user.email });
+
+    return res.json({
+      message: "Login successful",
+      token,
+      user: { _id: user._id, name: user.name, email: user.email, role: user.role },
+    });
+  } catch (err) {
+    console.error("LOGIN ERROR:", err);
+    return res.status(500).json({ message: "Login failed" });
+  }
+});
 
 
 // ================== PUBLIC JOBS (JOBSEEKER DROPDOWN) ==================
