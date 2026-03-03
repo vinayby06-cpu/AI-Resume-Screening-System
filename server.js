@@ -39,7 +39,15 @@ function isAllowedOrigin(origin) {
   if (allowedOrigins.has(origin)) return true;
 
   // ✅ allow Netlify preview deploys:
-  if (/^https:\/\/deploy-preview-\d+--.*\.netlify\.app$/.test(origin)) return true;
+  // https://deploy-preview-123--ai-resume-screening-system.netlify.app
+  if (/^https:\/\/deploy-preview-\d+--ai-resume-screening-system\.netlify\.app$/.test(origin))
+    return true;
+
+  // ✅ allow Netlify branch deploys:
+  // https://main--ai-resume-screening-system.netlify.app
+  // https://feature-xyz--ai-resume-screening-system.netlify.app
+  if (/^https:\/\/[a-z0-9-]+--ai-resume-screening-system\.netlify\.app$/.test(origin))
+    return true;
 
   return false;
 }
@@ -297,10 +305,18 @@ app.post("/api/auth/login", async (req, res) => {
 // ⬇️ Keep your existing routes below this line exactly as-is
 // /api/jobs, /api/analytics, /api/jobseeker/*, /api/admin/*, etc.
 
+// ================== IMPORTANT: JSON 404 for API (fixes non-JSON response) ==================
+app.use("/api", (req, res) => {
+  return res.status(404).json({
+    message: "API route not found",
+    path: req.originalUrl,
+    method: req.method,
+  });
+});
+
 // ================== GLOBAL ERROR HANDLER (helps debugging) ==================
 app.use((err, req, res, next) => {
   console.error("GLOBAL ERROR:", err);
-  // ✅ if CORS blocked, return a clear message
   return res.status(500).json({ message: err.message || "Server error" });
 });
 
