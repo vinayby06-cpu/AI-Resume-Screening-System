@@ -66,8 +66,8 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// ✅ IMPORTANT FIX: handle preflight using SAME cors options
-app.options(".*", cors(corsOptions));
+// ✅ IMPORTANT FIX: handle preflight using SAME cors options (works on Express 4/5)
+app.options(/.*/, cors(corsOptions));
 
 // ✅ helpful debug for deployment issues (logs origin + status)
 app.use((req, res, next) => {
@@ -113,7 +113,6 @@ const userSchema = new mongoose.Schema(
 );
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 
-// (keep your other schemas exactly as-is)
 const jobSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
@@ -300,6 +299,212 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(500).json({ message: "Login failed" });
   }
 });
+
+// ================== PUBLIC JOBS (JOBSEEKER DROPDOWN) ==================
+app.get("/api/jobs", async (req, res) => {
+  try {
+    const jobs = await Job.find({ status: "approved" }).sort({ createdAt: -1 });
+    return res.json(jobs);
+  } catch (err) {
+    console.error("GET JOBS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load jobs" });
+  }
+});
+
+// ================== JOBSEEKER ROUTES ==================
+
+// alias for convenience (optional)
+app.get("/api/jobseeker/jobs", async (req, res) => {
+  try {
+    const jobs = await Job.find({ status: "approved" }).sort({ createdAt: -1 });
+    return res.json(jobs);
+  } catch (err) {
+    console.error("JOBSEEKER JOBS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load jobs" });
+  }
+});
+
+// analyze resume (upload + JD)
+app.post(
+  "/api/jobseeker/analyze",
+  verifyToken,
+  requireRole(["jobseeker"]),
+  upload.single("resume"),
+  async (req, res) => {
+    try {
+      const userId = req.user?.id || "";
+      const userEmail = req.user?.email || "";
+      const { jobId = "", jobTitle = "", jobDescription = "" } = req.body || {};
+
+      if (!req.file) {
+        return res.status(400).json({ message: "Resume file is required" });
+      }
+
+      // NOTE: real ATS parsing can be added later (pdf-parse/natural)
+      // For now we store record and return dummy result (so UI works)
+      const atsScore = 0;
+      const matchedSkills = [];
+      const missingSkills = [];
+      const recommendations = [];
+
+      const analysis = await Analysis.create({
+        userId,
+        userEmail,
+        recruiterEmail: "",
+        jobId,
+        jobTitle: jobTitle || "Custom JD",
+        resumeFile: `/uploads/${req.file.filename}`,
+        atsScore,
+        matchedSkills,
+        missingSkills,
+        recommendations,
+        status: "Pending",
+      });
+
+      await Log.create({ level: "info", message: "Resume analyzed", actor: userEmail });
+
+      return res.json({
+        message: "Analysis created",
+        analysis,
+      });
+    } catch (err) {
+      console.error("JOBSEEKER ANALYZE ERROR:", err);
+      return res.status(500).json({ message: "Analyze failed" });
+    }
+  }
+);
+
+// history
+app.get(
+  "/api/jobseeker/history",
+  verifyToken,
+  requireRole(["jobseeker"]),
+  async (req, res) => {
+    try {
+      const userId = req.user?.id || "";
+      const items = await Analysis.find({ userId }).sort({ createdAt: -1 });
+      return res.json({ items });
+    } catch (err) {
+      console.error("JOBSEEKER HISTORY ERROR:", err);
+      return res.status(500).json({ message: "Failed to load history" });
+    }
+  }
+);
+
+// ================== RECRUITER ROUTES ==================
+
+// create job (pending by default)
+app.post(
+  "/api/recruiter/jobs",
+  verifyToken,
+  requireRole(["recruiter"]),
+  async (req, res) => {
+    try {
+      const recruiterEmail = req.user?.email || "";
+      const { title, skills } = req.body || {};
+
+      if (!title) return res.status(400).json({ message: "Job title is required" });
+
+      const job = await Job.create({
+        title,
+        skills: Array.isArray(skills)
+          ? skills
+          : String(skills || "")
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean),
+        postedBy: recruiterEmail,
+        status: "pending",
+      });
+
+      await Log.create({ level: "info", message: "Job posted", actor: recruiterEmail });
+
+      return res.status(201).json({ message: "Job created", job });
+    } catch (err) {
+      console.error("RECRUITER CREATE JOB ERROR:", err);
+      return res.status(500).json({ message: "Failed to create job" });
+    }
+  }
+);
+
+// list recruiter jobs
+app.get(
+  "/api/recruiter/jobs",
+  verifyToken,
+  requireRole(["recruiter"]),
+  async (req, res) => {
+    try {
+      const recruiterEmail = req.user?.email || "";
+      const jobs = await Job.find({ postedBy: recruiterEmail }).sort({ createdAt: -1 });
+      return res.json({ jobs });
+    } catch (err) {
+      console.error("RECRUITER JOBS ERROR:", err);
+      return res.status(500).json({ message: "Failed to load jobs" });
+    }
+  }
+);
+
+// list candidates
+app.get(
+  "/api/recruiter/candidates",
+  verifyToken,
+  requireRole(["recruiter"]),
+  async (req, res) => {
+    try {
+      const recruiterEmail = req.user?.email || "";
+      const candidates = await Candidate.find({ recruiterEmail }).sort({ createdAt: -1 });
+      return res.json({ candidates });
+    } catch (err) {
+      console.error("RECRUITER CANDIDATES ERROR:", err);
+      return res.status(500).json({ message: "Failed to load candidates" });
+    }
+  }
+);
+
+// update candidate status
+app.patch(
+  "/api/recruiter/candidates/:id/status",
+  verifyToken,
+  requireRole(["recruiter"]),
+  async (req, res) => {
+    try {
+      const recruiterEmail = req.user?.email || "";
+      const { status } = req.body || {};
+      if (!status) return res.status(400).json({ message: "Status is required" });
+
+      const cand = await Candidate.findByIdAndUpdate(
+        req.params.id,
+        { status },
+        { new: true }
+      );
+
+      await Log.create({
+        level: "info",
+        message: "Candidate status updated",
+        actor: recruiterEmail,
+      });
+
+      // Optional notification
+      if (cand?.email) {
+        await Notification.create({
+          userEmail: cand.email,
+          title: "Application Update",
+          message: `Your application status changed to: ${status}`,
+          type: "info",
+          jobId: cand.jobId || "",
+          jobTitle: cand.jobTitle || "",
+          recruiterEmail,
+          status,
+        });
+      }
+
+      return res.json({ message: "Status updated", candidate: cand });
+    } catch (err) {
+      console.error("RECRUITER UPDATE STATUS ERROR:", err);
+      return res.status(500).json({ message: "Failed to update status" });
+    }
+  }
+);
 
 // ================== ADMIN ROUTES (FIX 404 ISSUE) ==================
 
