@@ -238,7 +238,12 @@ app.get("/", (req, res) => {
 // ---------- REGISTER ----------
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { name, email, password, role } = req.body || {};
+    // ✅ FIX: normalize inputs (trim + lowercase email)
+    let { name, email, password, role } = req.body || {};
+    name = String(name || "").trim();
+    email = String(email || "").trim().toLowerCase();
+    password = String(password || "");
+    role = String(role || "").trim();
 
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: "All fields are required" });
@@ -251,7 +256,7 @@ app.post("/api/auth/register", async (req, res) => {
 
     const user = await User.create({
       name,
-      email,
+      email, // ✅ saved normalized
       password: hashed,
       role,
     });
@@ -269,13 +274,16 @@ app.post("/api/auth/register", async (req, res) => {
 // ---------- LOGIN ----------
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body || {};
+    // ✅ FIX: normalize inputs (trim + lowercase email)
+    let { email, password } = req.body || {};
+    email = String(email || "").trim().toLowerCase();
+    password = String(password || "");
 
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password are required" });
     }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }); // ✅ lookup normalized
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
     const match = await bcrypt.compare(password, user.password);
