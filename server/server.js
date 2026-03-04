@@ -4,49 +4,46 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 
 const app = express();
 
-// ================== IMPORTANT STARTUP CHECKS ==================
-if (!process.env.MONGO_URI) console.error("❌ MONGO_URI is missing in environment variables");
-if (!process.env.JWT_SECRET)
-  console.error("❌ JWT_SECRET is missing in environment variables (LOGIN WILL FAIL)");
-if (!process.env.RESET_KEY) console.warn("⚠️ RESET_KEY is missing (debug/reset APIs disabled)");
+/* ================== STARTUP CHECKS ================== */
+if (!process.env.MONGO_URI) console.error("❌ MONGO_URI missing");
+if (!process.env.JWT_SECRET) console.error("❌ JWT_SECRET missing (login will fail)");
+if (!process.env.RESET_KEY) console.warn("⚠️ RESET_KEY missing (reset/debug disabled)");
 
-// ================== HELPERS ==================
+/* ================== HELPERS ================== */
 const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
 const normalizeText = (v) => String(v || "").trim();
 const ROLES = new Set(["admin", "recruiter", "jobseeker"]);
 
-// ================== MIDDLEWARE ==================
+/* ================== BODY PARSERS ================== */
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-/**
- * ✅ CORS
- * If you will serve frontend from SAME backend domain, CORS is not needed for prod.
- * But keep localhost + netlify allowed for dev/testing.
- */
+/* ================== CORS ==================
+   NOTE: If you serve React from same backend domain (single service),
+   you can remove CORS in production. For now we keep it safe. */
 const allowedOrigins = new Set([
   "http://localhost:3000",
   "http://localhost:3001",
   "https://ai-resume-screening-system.netlify.app",
-  "https://ai-resume-screening-system-by.onrender.com",
+  "https://ai-resume-screening-system-by.onrender.com", // your Render frontend domain (if any)
+  "https://ai-resume-screening-system-vinay.onrender.com", // your Render backend domain
 ]);
 
 function isAllowedOrigin(origin) {
-  if (!origin) return true;
+  if (!origin) return true; // Postman/curl
   if (allowedOrigins.has(origin)) return true;
 
-  // Netlify preview deploys
+  // Netlify previews: https://deploy-preview-123--site.netlify.app
   if (/^https:\/\/deploy-preview-\d+--ai-resume-screening-system\.netlify\.app$/.test(origin))
     return true;
 
-  // Netlify branch deploys
+  // Netlify branch deploys: https://main--site.netlify.app
   if (/^https:\/\/[a-z0-9-]+--ai-resume-screening-system\.netlify\.app$/.test(origin))
     return true;
 
@@ -67,7 +64,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
-// Request log
+/* ================== REQUEST LOG ================== */
 app.use((req, res, next) => {
   const start = Date.now();
   const origin = req.headers.origin || "";
@@ -80,17 +77,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// ================== STATIC UPLOADS ==================
-if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+/* ================== UPLOADS STATIC ================== */
+const uploadsDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
+app.use("/uploads", express.static(uploadsDir));
 
-// ================== DB CONNECT ==================
+/* ================== DB CONNECT ================== */
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ MongoDB Error:", err));
 
-// ================== MODELS ==================
+/* ================== MODELS ================== */
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -112,7 +110,7 @@ const jobSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
     skills: { type: [String], default: [] },
-    postedBy: { type: String },
+    postedBy: { type: String, default: "" },
     status: { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
   },
   { timestamps: true }
@@ -121,7 +119,7 @@ const Job = mongoose.models.Job || mongoose.model("Job", jobSchema);
 
 const candidateSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, default: "Applicant" },
+    name: { type: String, default: "Applicant" },
     email: { type: String, required: true },
     recruiterEmail: { type: String, default: "" },
     jobId: { type: String, default: "" },
@@ -153,24 +151,19 @@ const analysisSchema = new mongoose.Schema(
 const Analysis = mongoose.models.Analysis || mongoose.model("Analysis", analysisSchema);
 
 const logSchema = new mongoose.Schema(
-  {
-    level: { type: String, default: "info" },
-    message: { type: String, default: "" },
-    actor: { type: String, default: "" },
-  },
+  { level: { type: String, default: "info" }, message: String, actor: String },
   { timestamps: true }
 );
 const Log = mongoose.models.Log || mongoose.model("Log", logSchema);
 
-// ================== AUTH MIDDLEWARE ==================
+/* ================== AUTH ================== */
 const verifyToken = (req, res, next) => {
   try {
     const auth = req.headers.authorization;
     if (!auth) return res.status(401).json({ message: "No token provided" });
 
     const token = auth.startsWith("Bearer ") ? auth.split(" ")[1] : auth;
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    req.user = jwt.verify(token, process.env.JWT_SECRET);
     next();
   } catch {
     return res.status(401).json({ message: "Invalid token" });
@@ -183,15 +176,17 @@ const requireRole = (roles = []) => (req, res, next) => {
   next();
 };
 
-// ================== UPLOAD SETUP ==================
+/* ================== MULTER ================== */
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/"),
+  destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname)),
 });
 const upload = multer({ storage });
 
-// ================== API ROUTES ==================
-app.get("/api/health", async (req, res) => {
+/* ================== BASIC ROUTES ================== */
+app.get("/", (req, res) => res.send("🚀 AI Resume Screening Backend Running"));
+
+app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
     time: new Date().toISOString(),
@@ -199,7 +194,19 @@ app.get("/api/health", async (req, res) => {
   });
 });
 
-// REGISTER
+/* ✅ Debug endpoint: list routes (helps “API route not found”) */
+app.get("/api/routes", (req, res) => {
+  const routes = [];
+  app._router.stack.forEach((m) => {
+    if (m.route && m.route.path) {
+      const methods = Object.keys(m.route.methods).map((x) => x.toUpperCase());
+      routes.push({ path: m.route.path, methods });
+    }
+  });
+  res.json({ routes });
+});
+
+/* ================== AUTH ROUTES ================== */
 app.post("/api/auth/register", async (req, res) => {
   try {
     let { name, email, password, role } = req.body || {};
@@ -211,15 +218,12 @@ app.post("/api/auth/register", async (req, res) => {
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: "All fields are required" });
     }
-    if (!ROLES.has(role)) {
-      return res.status(400).json({ message: "Invalid role (use admin/recruiter/jobseeker)" });
-    }
+    if (!ROLES.has(role)) return res.status(400).json({ message: "Invalid role" });
 
     const existing = await User.findOne({ email });
     if (existing) return res.status(409).json({ message: "User already exists" });
 
     const hashed = await bcrypt.hash(password, 10);
-
     const user = await User.create({ name, email, password: hashed, role });
 
     return res.status(201).json({
@@ -233,7 +237,6 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-// LOGIN
 app.post("/api/auth/login", async (req, res) => {
   try {
     let { email, password, role } = req.body || {};
@@ -241,17 +244,25 @@ app.post("/api/auth/login", async (req, res) => {
     password = String(password || "");
     role = normalizeText(role);
 
+    console.log("LOGIN TRY:", { email, hasPassword: !!password, role: role || "not-sent" });
+
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password are required" });
     }
 
     const user = await User.findOne({ email });
+    console.log("USER FOUND:", !!user);
+
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
-    // optional role check if frontend sends it
-    if (role && user.role !== role) return res.status(401).json({ message: "Invalid credentials" });
+    if (role && user.role !== role) {
+      console.log("ROLE MISMATCH:", { dbRole: user.role, clientRole: role });
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     const match = await bcrypt.compare(password, user.password);
+    console.log("PASSWORD MATCH:", match);
+
     if (!match) return res.status(401).json({ message: "Invalid credentials" });
 
     const token = jwt.sign(
@@ -273,20 +284,36 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// recruiter stats
+/* ================== JOBS ================== */
+app.get("/api/jobs", async (req, res) => {
+  try {
+    const jobs = await Job.find({ status: "approved" }).sort({ createdAt: -1 });
+    return res.json(jobs);
+  } catch (err) {
+    console.error("GET JOBS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load jobs" });
+  }
+});
+
+/* ================== RECRUITER ================== */
 app.get("/api/recruiter/stats", verifyToken, requireRole(["recruiter"]), async (req, res) => {
   try {
     const recruiterEmail = req.user?.email || "";
     const totalJobs = await Job.countDocuments({ postedBy: recruiterEmail });
     const totalCandidates = await Candidate.countDocuments({ recruiterEmail });
-    return res.json({ totalJobs, totalCandidates, averageATS: "0.0" });
+
+    return res.json({
+      totalJobs,
+      totalCandidates,
+      averageATS: "0.0",
+    });
   } catch (err) {
     console.error("RECRUITER STATS ERROR:", err);
     return res.status(500).json({ message: "Failed to load stats" });
   }
 });
 
-// ================== API 404 ONLY ==================
+/* ================== API 404 ================== */
 app.use("/api", (req, res) => {
   return res.status(404).json({
     message: "API route not found",
@@ -295,32 +322,29 @@ app.use("/api", (req, res) => {
   });
 });
 
-// ================== SERVE REACT FRONTEND (SPA SUPPORT) ==================
-/**
- * Put React build into: server/client/build
- * Then all frontend routes like /login will work (no blank page)
- */
+/* ================== SPA SUPPORT (OPTIONAL) ==================
+   If you are using single-service Render deployment, build React and copy to:
+   server/client/build
+*/
 const clientBuildPath = path.join(__dirname, "client", "build");
 
 if (fs.existsSync(clientBuildPath)) {
   app.use(express.static(clientBuildPath));
 
-  // SPA fallback: any non-API route -> index.html
+  // Any non-API request -> index.html (fixes /login Not Found)
   app.get("*", (req, res) => {
     res.sendFile(path.join(clientBuildPath, "index.html"));
   });
 } else {
-  console.warn("⚠️ React build folder not found at:", clientBuildPath);
-  // fallback home
-  app.get("/", (req, res) => res.send("🚀 Backend running (React build not found)"));
+  console.warn("⚠️ React build not found at:", clientBuildPath);
 }
 
-// ================== GLOBAL ERROR HANDLER ==================
+/* ================== GLOBAL ERROR ================== */
 app.use((err, req, res, next) => {
   console.error("GLOBAL ERROR:", err);
   return res.status(500).json({ message: err.message || "Server error" });
 });
 
-// ================== START SERVER ==================
+/* ================== START ================== */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
