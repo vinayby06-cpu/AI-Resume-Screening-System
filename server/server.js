@@ -13,49 +13,44 @@ const fs = require("fs");
 const app = express();
 
 // ================== IMPORTANT STARTUP CHECKS ==================
-if (!process.env.MONGO_URI) {
-  console.error("❌ MONGO_URI is missing in environment variables");
-}
-if (!process.env.JWT_SECRET) {
+if (!process.env.MONGO_URI) console.error("❌ MONGO_URI is missing in environment variables");
+if (!process.env.JWT_SECRET)
   console.error("❌ JWT_SECRET is missing in environment variables (LOGIN WILL FAIL)");
-}
-if (!process.env.RESET_KEY) {
-  console.warn("⚠️ RESET_KEY is missing (password reset API will be disabled)");
-}
+if (!process.env.RESET_KEY) console.warn("⚠️ RESET_KEY is missing (debug/reset APIs disabled)");
+
+// ================== HELPERS ==================
+const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
+const normalizeText = (v) => String(v || "").trim();
+const ROLES = new Set(["admin", "recruiter", "jobseeker"]);
 
 // ================== MIDDLEWARE ==================
-// ✅ body parsers FIRST (so req.body works)
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ CORS (safe for Netlify + previews + localhost)
+// ✅ CORS (Netlify + localhost + Render)
 const allowedOrigins = new Set([
   "http://localhost:3000",
   "http://localhost:3001",
   "https://ai-resume-screening-system.netlify.app",
-  // Add your Render FRONTEND here only if you really have a separate frontend service:
   "https://ai-resume-screening-system-by.onrender.com",
 ]);
 
 function isAllowedOrigin(origin) {
-  if (!origin) return true; // Postman/curl has no origin
+  if (!origin) return true;
+
   if (allowedOrigins.has(origin)) return true;
 
-  // ✅ allow Netlify preview deploys:
-  // https://deploy-preview-123--ai-resume-screening-system.netlify.app
+  // Netlify preview deploys
   if (/^https:\/\/deploy-preview-\d+--ai-resume-screening-system\.netlify\.app$/.test(origin))
     return true;
 
-  // ✅ allow Netlify branch deploys:
-  // https://main--ai-resume-screening-system.netlify.app
-  // https://feature-xyz--ai-resume-screening-system.netlify.app
+  // Netlify branch deploys
   if (/^https:\/\/[a-z0-9-]+--ai-resume-screening-system\.netlify\.app$/.test(origin))
     return true;
 
   return false;
 }
 
-// ✅ IMPORTANT: Use ONE cors config everywhere (including OPTIONS)
 const corsOptions = {
   origin: (origin, cb) => {
     if (isAllowedOrigin(origin)) return cb(null, true);
@@ -68,11 +63,9 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
-// ✅ IMPORTANT FIX: handle preflight using SAME cors options (works on Express 4/5)
 app.options(/.*/, cors(corsOptions));
 
-// ✅ helpful debug for deployment issues (logs origin + status)
+// request log
 app.use((req, res, next) => {
   const start = Date.now();
   const origin = req.headers.origin || "";
@@ -88,9 +81,14 @@ app.use((req, res, next) => {
 // Serve uploads
 app.use("/uploads", express.static("uploads"));
 
-// ✅ quick health endpoint (useful for testing from browser)
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
+// Health
+app.get("/api/health", async (req, res) => {
+  const state = mongoose.connection.readyState; // 0,1,2,3
+  res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    mongoReadyState: state,
+  });
 });
 
 // ================== DB CONNECT ==================
@@ -102,8 +100,8 @@ mongoose
 // ================== MODELS ==================
 const userSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
-    email: { type: String, unique: true, required: true },
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, trim: true, lowercase: true },
     password: { type: String, required: true },
     role: {
       type: String,
@@ -114,6 +112,10 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// ensure index for unique email
+userSchema.index({ email: 1 }, { unique: true });
+
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 
 const jobSchema = new mongoose.Schema(
@@ -207,59 +209,54 @@ const verifyToken = (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
     next();
-  } catch (err) {
+  } catch {
     return res.status(401).json({ message: "Invalid token" });
   }
 };
 
-const requireRole = (roles = []) => {
-  return (req, res, next) => {
-    if (!req.user?.role) return res.status(401).json({ message: "Unauthorized" });
-    if (!roles.includes(req.user.role)) return res.status(403).json({ message: "Forbidden" });
-    next();
-  };
+const requireRole = (roles = []) => (req, res, next) => {
+  if (!req.user?.role) return res.status(401).json({ message: "Unauthorized" });
+  if (!roles.includes(req.user.role)) return res.status(403).json({ message: "Forbidden" });
+  next();
 };
 
 // ================== UPLOAD SETUP ==================
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
 
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, "uploads/");
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + path.extname(file.originalname));
-  },
+  destination: (req, file, cb) => cb(null, "uploads/"),
+  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname)),
 });
 const upload = multer({ storage });
 
 // ================== ROUTES ==================
-app.get("/", (req, res) => {
-  res.send("🚀 AI Resume Screening Backend Running");
-});
+app.get("/", (req, res) => res.send("🚀 AI Resume Screening Backend Running"));
 
 // ---------- REGISTER ----------
 app.post("/api/auth/register", async (req, res) => {
   try {
-    // ✅ FIX: normalize inputs (trim + lowercase email)
     let { name, email, password, role } = req.body || {};
-    name = String(name || "").trim();
-    email = String(email || "").trim().toLowerCase();
+    name = normalizeText(name);
+    email = normalizeEmail(email);
     password = String(password || "");
-    role = String(role || "").trim();
+    role = normalizeText(role);
 
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
+    if (!ROLES.has(role)) {
+      return res.status(400).json({ message: "Invalid role" });
+    }
+
     const existing = await User.findOne({ email });
-    if (existing) return res.status(400).json({ message: "User already exists" });
+    if (existing) return res.status(409).json({ message: "User already exists" });
 
     const hashed = await bcrypt.hash(password, 10);
 
     const user = await User.create({
       name,
-      email, // ✅ saved normalized
+      email,
       password: hashed,
       role,
     });
@@ -270,6 +267,8 @@ app.post("/api/auth/register", async (req, res) => {
     });
   } catch (err) {
     console.error("REGISTER ERROR:", err);
+    // handle duplicate key error nicely
+    if (err?.code === 11000) return res.status(409).json({ message: "User already exists" });
     return res.status(500).json({ message: "Registration failed" });
   }
 });
@@ -277,11 +276,12 @@ app.post("/api/auth/register", async (req, res) => {
 // ---------- LOGIN ----------
 app.post("/api/auth/login", async (req, res) => {
   try {
-    let { email, password } = req.body || {};
-    email = String(email || "").trim().toLowerCase();
+    let { email, password, role } = req.body || {};
+    email = normalizeEmail(email);
     password = String(password || "");
+    role = normalizeText(role); // optional (if frontend sends it)
 
-    console.log("LOGIN TRY:", { email, hasPassword: !!password });
+    console.log("LOGIN TRY:", { email, hasPassword: !!password, role: role || "not-sent" });
 
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password are required" });
@@ -290,12 +290,19 @@ app.post("/api/auth/login", async (req, res) => {
     const user = await User.findOne({ email });
     console.log("USER FOUND:", !!user);
 
-    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+    // ✅ 401 for auth failures
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+
+    // If frontend sends role, enforce matching role
+    if (role && user.role !== role) {
+      console.log("ROLE MISMATCH:", { dbRole: user.role, clientRole: role });
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     const match = await bcrypt.compare(password, user.password);
     console.log("PASSWORD MATCH:", match);
 
-    if (!match) return res.status(400).json({ message: "Invalid credentials" });
+    if (!match) return res.status(401).json({ message: "Invalid credentials" });
 
     const token = jwt.sign(
       { id: user._id.toString(), role: user.role, email: user.email },
@@ -316,25 +323,44 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// ---------- RESET PASSWORD (TEMP / ADMIN USE) ----------
+// ✅ Debug endpoint to confirm user exists in deployed DB (protected by RESET_KEY)
+// POST /api/auth/debug-user  { email, key }
+app.post("/api/auth/debug-user", async (req, res) => {
+  try {
+    if (!process.env.RESET_KEY) return res.status(400).json({ message: "RESET_KEY not configured" });
+
+    const email = normalizeEmail(req.body?.email);
+    const key = String(req.body?.key || "");
+    if (!email || !key) return res.status(400).json({ message: "email and key required" });
+    if (key !== process.env.RESET_KEY) return res.status(403).json({ message: "Forbidden" });
+
+    const user = await User.findOne({ email }).lean();
+    return res.json({
+      email,
+      exists: !!user,
+      role: user?.role || null,
+      // do NOT return password; just show if hash exists
+      hasPasswordHash: !!user?.password,
+    });
+  } catch (err) {
+    console.error("DEBUG USER ERROR:", err);
+    return res.status(500).json({ message: "Debug failed" });
+  }
+});
+
+// ---------- RESET PASSWORD ----------
 app.post("/api/auth/reset-password", async (req, res) => {
   try {
-    if (!process.env.RESET_KEY) {
-      return res.status(400).json({ message: "RESET_KEY not configured" });
-    }
+    if (!process.env.RESET_KEY) return res.status(400).json({ message: "RESET_KEY not configured" });
 
-    let { email, newPassword, key } = req.body || {};
-    email = String(email || "").trim().toLowerCase();
-    newPassword = String(newPassword || "");
-    key = String(key || "");
+    const email = normalizeEmail(req.body?.email);
+    const newPassword = String(req.body?.newPassword || "");
+    const key = String(req.body?.key || "");
 
     if (!email || !newPassword || !key) {
       return res.status(400).json({ message: "email, newPassword, key are required" });
     }
-
-    if (key !== process.env.RESET_KEY) {
-      return res.status(403).json({ message: "Forbidden" });
-    }
+    if (key !== process.env.RESET_KEY) return res.status(403).json({ message: "Forbidden" });
 
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -343,7 +369,6 @@ app.post("/api/auth/reset-password", async (req, res) => {
     await user.save();
 
     await Log.create({ level: "info", message: "Password reset", actor: email });
-
     return res.json({ message: "Password reset successful" });
   } catch (err) {
     console.error("RESET PASSWORD ERROR:", err);
@@ -351,7 +376,7 @@ app.post("/api/auth/reset-password", async (req, res) => {
   }
 });
 
-// ================== PUBLIC JOBS (JOBSEEKER DROPDOWN) ==================
+// ================== JOBS ==================
 app.get("/api/jobs", async (req, res) => {
   try {
     const jobs = await Job.find({ status: "approved" }).sort({ createdAt: -1 });
@@ -362,9 +387,6 @@ app.get("/api/jobs", async (req, res) => {
   }
 });
 
-// ================== JOBSEEKER ROUTES ==================
-
-// alias for convenience (optional)
 app.get("/api/jobseeker/jobs", async (req, res) => {
   try {
     const jobs = await Job.find({ status: "approved" }).sort({ createdAt: -1 });
@@ -375,7 +397,7 @@ app.get("/api/jobseeker/jobs", async (req, res) => {
   }
 });
 
-// analyze resume (upload + JD)
+// analyze resume
 app.post(
   "/api/jobseeker/analyze",
   verifyToken,
@@ -385,18 +407,9 @@ app.post(
     try {
       const userId = req.user?.id || "";
       const userEmail = req.user?.email || "";
-      const { jobId = "", jobTitle = "", jobDescription = "" } = req.body || {};
+      const { jobId = "", jobTitle = "" } = req.body || {};
 
-      if (!req.file) {
-        return res.status(400).json({ message: "Resume file is required" });
-      }
-
-      // NOTE: real ATS parsing can be added later (pdf-parse/natural)
-      // For now we store record and return dummy result (so UI works)
-      const atsScore = 0;
-      const matchedSkills = [];
-      const missingSkills = [];
-      const recommendations = [];
+      if (!req.file) return res.status(400).json({ message: "Resume file is required" });
 
       const analysis = await Analysis.create({
         userId,
@@ -405,19 +418,16 @@ app.post(
         jobId,
         jobTitle: jobTitle || "Custom JD",
         resumeFile: `/uploads/${req.file.filename}`,
-        atsScore,
-        matchedSkills,
-        missingSkills,
-        recommendations,
+        atsScore: 0,
+        matchedSkills: [],
+        missingSkills: [],
+        recommendations: [],
         status: "Pending",
       });
 
       await Log.create({ level: "info", message: "Resume analyzed", actor: userEmail });
 
-      return res.json({
-        message: "Analysis created",
-        analysis,
-      });
+      return res.json({ message: "Analysis created", analysis });
     } catch (err) {
       console.error("JOBSEEKER ANALYZE ERROR:", err);
       return res.status(500).json({ message: "Analyze failed" });
@@ -425,123 +435,88 @@ app.post(
   }
 );
 
-// history
-app.get(
-  "/api/jobseeker/history",
-  verifyToken,
-  requireRole(["jobseeker"]),
-  async (req, res) => {
-    try {
-      const userId = req.user?.id || "";
-      const items = await Analysis.find({ userId }).sort({ createdAt: -1 });
-      return res.json({ items });
-    } catch (err) {
-      console.error("JOBSEEKER HISTORY ERROR:", err);
-      return res.status(500).json({ message: "Failed to load history" });
-    }
+app.get("/api/jobseeker/history", verifyToken, requireRole(["jobseeker"]), async (req, res) => {
+  try {
+    const userId = req.user?.id || "";
+    const items = await Analysis.find({ userId }).sort({ createdAt: -1 });
+    return res.json({ items });
+  } catch (err) {
+    console.error("JOBSEEKER HISTORY ERROR:", err);
+    return res.status(500).json({ message: "Failed to load history" });
   }
-);
+});
 
-// ================== RECRUITER ROUTES ==================
+// ================== RECRUITER ==================
+app.get("/api/recruiter/stats", verifyToken, requireRole(["recruiter"]), async (req, res) => {
+  try {
+    const recruiterEmail = req.user?.email || "";
+    const totalJobs = await Job.countDocuments({ postedBy: recruiterEmail });
+    const totalCandidates = await Candidate.countDocuments({ recruiterEmail });
 
-// recruiter analytics / stats (fix "API route not found" on dashboard)
-app.get(
-  "/api/recruiter/stats",
-  verifyToken,
-  requireRole(["recruiter"]),
-  async (req, res) => {
-    try {
-      const recruiterEmail = req.user?.email || "";
+    const avg = await Analysis.aggregate([
+      { $match: { recruiterEmail } },
+      { $group: { _id: null, avgScore: { $avg: "$atsScore" } } },
+    ]);
 
-      const totalJobs = await Job.countDocuments({ postedBy: recruiterEmail });
-      const totalCandidates = await Candidate.countDocuments({ recruiterEmail });
-
-      const avg = await Analysis.aggregate([
-        { $match: { recruiterEmail } },
-        { $group: { _id: null, avgScore: { $avg: "$atsScore" } } },
-      ]);
-
-      return res.json({
-        totalJobs,
-        totalCandidates,
-        averageATS: Number(avg[0]?.avgScore || 0).toFixed(1),
-      });
-    } catch (err) {
-      console.error("RECRUITER STATS ERROR:", err);
-      return res.status(500).json({ message: "Failed to load stats" });
-    }
+    return res.json({
+      totalJobs,
+      totalCandidates,
+      averageATS: Number(avg[0]?.avgScore || 0).toFixed(1),
+    });
+  } catch (err) {
+    console.error("RECRUITER STATS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load stats" });
   }
-);
+});
 
-// create job (pending by default)
-app.post(
-  "/api/recruiter/jobs",
-  verifyToken,
-  requireRole(["recruiter"]),
-  async (req, res) => {
-    try {
-      const recruiterEmail = req.user?.email || "";
-      const { title, skills } = req.body || {};
+app.post("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (req, res) => {
+  try {
+    const recruiterEmail = req.user?.email || "";
+    const { title, skills } = req.body || {};
+    if (!title) return res.status(400).json({ message: "Job title is required" });
 
-      if (!title) return res.status(400).json({ message: "Job title is required" });
+    const job = await Job.create({
+      title,
+      skills: Array.isArray(skills)
+        ? skills
+        : String(skills || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+      postedBy: recruiterEmail,
+      status: "pending",
+    });
 
-      const job = await Job.create({
-        title,
-        skills: Array.isArray(skills)
-          ? skills
-          : String(skills || "")
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean),
-        postedBy: recruiterEmail,
-        status: "pending",
-      });
-
-      await Log.create({ level: "info", message: "Job posted", actor: recruiterEmail });
-
-      return res.status(201).json({ message: "Job created", job });
-    } catch (err) {
-      console.error("RECRUITER CREATE JOB ERROR:", err);
-      return res.status(500).json({ message: "Failed to create job" });
-    }
+    await Log.create({ level: "info", message: "Job posted", actor: recruiterEmail });
+    return res.status(201).json({ message: "Job created", job });
+  } catch (err) {
+    console.error("RECRUITER CREATE JOB ERROR:", err);
+    return res.status(500).json({ message: "Failed to create job" });
   }
-);
+});
 
-// list recruiter jobs
-app.get(
-  "/api/recruiter/jobs",
-  verifyToken,
-  requireRole(["recruiter"]),
-  async (req, res) => {
-    try {
-      const recruiterEmail = req.user?.email || "";
-      const jobs = await Job.find({ postedBy: recruiterEmail }).sort({ createdAt: -1 });
-      return res.json({ jobs });
-    } catch (err) {
-      console.error("RECRUITER JOBS ERROR:", err);
-      return res.status(500).json({ message: "Failed to load jobs" });
-    }
+app.get("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (req, res) => {
+  try {
+    const recruiterEmail = req.user?.email || "";
+    const jobs = await Job.find({ postedBy: recruiterEmail }).sort({ createdAt: -1 });
+    return res.json({ jobs });
+  } catch (err) {
+    console.error("RECRUITER JOBS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load jobs" });
   }
-);
+});
 
-// list candidates
-app.get(
-  "/api/recruiter/candidates",
-  verifyToken,
-  requireRole(["recruiter"]),
-  async (req, res) => {
-    try {
-      const recruiterEmail = req.user?.email || "";
-      const candidates = await Candidate.find({ recruiterEmail }).sort({ createdAt: -1 });
-      return res.json({ candidates });
-    } catch (err) {
-      console.error("RECRUITER CANDIDATES ERROR:", err);
-      return res.status(500).json({ message: "Failed to load candidates" });
-    }
+app.get("/api/recruiter/candidates", verifyToken, requireRole(["recruiter"]), async (req, res) => {
+  try {
+    const recruiterEmail = req.user?.email || "";
+    const candidates = await Candidate.find({ recruiterEmail }).sort({ createdAt: -1 });
+    return res.json({ candidates });
+  } catch (err) {
+    console.error("RECRUITER CANDIDATES ERROR:", err);
+    return res.status(500).json({ message: "Failed to load candidates" });
   }
-);
+});
 
-// update candidate status
 app.patch(
   "/api/recruiter/candidates/:id/status",
   verifyToken,
@@ -552,11 +527,7 @@ app.patch(
       const { status } = req.body || {};
       if (!status) return res.status(400).json({ message: "Status is required" });
 
-      const cand = await Candidate.findByIdAndUpdate(
-        req.params.id,
-        { status },
-        { new: true }
-      );
+      const cand = await Candidate.findByIdAndUpdate(req.params.id, { status }, { new: true });
 
       await Log.create({
         level: "info",
@@ -564,7 +535,6 @@ app.patch(
         actor: recruiterEmail,
       });
 
-      // Optional notification
       if (cand?.email) {
         await Notification.create({
           userEmail: cand.email,
@@ -586,9 +556,7 @@ app.patch(
   }
 );
 
-// ================== ADMIN ROUTES (FIX 404 ISSUE) ==================
-
-// GET STATS
+// ================== ADMIN ==================
 app.get("/api/admin/stats", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
@@ -598,9 +566,7 @@ app.get("/api/admin/stats", verifyToken, requireRole(["admin"]), async (req, res
     const totalResumes = await Analysis.countDocuments();
     const totalLogs = await Log.countDocuments();
 
-    const avg = await Analysis.aggregate([
-      { $group: { _id: null, avgScore: { $avg: "$atsScore" } } },
-    ]);
+    const avg = await Analysis.aggregate([{ $group: { _id: null, avgScore: { $avg: "$atsScore" } } }]);
 
     return res.json({
       totalUsers,
@@ -617,7 +583,6 @@ app.get("/api/admin/stats", verifyToken, requireRole(["admin"]), async (req, res
   }
 });
 
-// GET USERS
 app.get("/api/admin/users", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const users = await User.find().sort({ createdAt: -1 });
@@ -628,7 +593,6 @@ app.get("/api/admin/users", verifyToken, requireRole(["admin"]), async (req, res
   }
 });
 
-// DELETE USER
 app.delete("/api/admin/users/:id", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     await User.findByIdAndDelete(req.params.id);
@@ -639,11 +603,11 @@ app.delete("/api/admin/users/:id", verifyToken, requireRole(["admin"]), async (r
   }
 });
 
-// UPDATE USER ROLE
 app.put("/api/admin/users/:id/role", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
-    const { role } = req.body || {};
+    const role = normalizeText(req.body?.role);
     if (!role) return res.status(400).json({ message: "Role is required" });
+    if (!ROLES.has(role)) return res.status(400).json({ message: "Invalid role" });
 
     await User.findByIdAndUpdate(req.params.id, { role });
     return res.json({ message: "Role updated" });
@@ -653,7 +617,6 @@ app.put("/api/admin/users/:id/role", verifyToken, requireRole(["admin"]), async 
   }
 });
 
-// GET JOBS
 app.get("/api/admin/jobs", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const jobs = await Job.find().sort({ createdAt: -1 });
@@ -664,10 +627,9 @@ app.get("/api/admin/jobs", verifyToken, requireRole(["admin"]), async (req, res)
   }
 });
 
-// UPDATE JOB STATUS
 app.patch("/api/admin/jobs/:id/status", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
-    const { status } = req.body || {};
+    const status = normalizeText(req.body?.status);
     if (!status) return res.status(400).json({ message: "Status is required" });
 
     await Job.findByIdAndUpdate(req.params.id, { status });
@@ -678,7 +640,6 @@ app.patch("/api/admin/jobs/:id/status", verifyToken, requireRole(["admin"]), asy
   }
 });
 
-// GET RESUMES
 app.get("/api/admin/resumes", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const resumes = await Analysis.find().sort({ createdAt: -1 });
@@ -689,7 +650,6 @@ app.get("/api/admin/resumes", verifyToken, requireRole(["admin"]), async (req, r
   }
 });
 
-// GET LOGS
 app.get("/api/admin/logs", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const logs = await Log.find().sort({ createdAt: -1 });
@@ -700,7 +660,7 @@ app.get("/api/admin/logs", verifyToken, requireRole(["admin"]), async (req, res)
   }
 });
 
-// ================== IMPORTANT: JSON 404 for API (only once) ==================
+// JSON 404 for API
 app.use("/api", (req, res) => {
   return res.status(404).json({
     message: "API route not found",
@@ -709,12 +669,12 @@ app.use("/api", (req, res) => {
   });
 });
 
-// ================== GLOBAL ERROR HANDLER (helps debugging) ==================
+// Global error handler
 app.use((err, req, res, next) => {
   console.error("GLOBAL ERROR:", err);
   return res.status(500).json({ message: err.message || "Server error" });
 });
 
-// ================== START SERVER ==================
+// Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
