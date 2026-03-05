@@ -218,12 +218,51 @@ export default function JobSeekerDashboard() {
   };
 
   // -----------------------------
-  // Download Report PDF
+  // Download Report PDF ✅ FIXED
   // -----------------------------
   const handleDownloadReport = async () => {
-    // ✅ NOTE: Backend does not have /api/jobseeker/report/:id unless you add it.
-    // For now, show a clear message instead of failing silently.
-    showToast("Report download API not added in backend yet.");
+    if (!analysisId) {
+      showToast("Analyze resume first.");
+      return;
+    }
+
+    try {
+      const token = getToken();
+
+      const res = await fetch(`${API_BASE}/api/jobseeker/report/${analysisId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+
+      if (res.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        window.location.href = "/login";
+        throw new Error("Session expired. Please login again.");
+      }
+
+      if (!res.ok) {
+        // backend might return JSON error -> try to read it
+        let errMsg = "Failed to download report";
+        try {
+          const j = await res.json();
+          errMsg = j?.message || errMsg;
+        } catch {}
+        throw new Error(errMsg);
+      }
+
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `ATS_Report_${analysisId}.pdf`;
+      a.click();
+
+      window.URL.revokeObjectURL(blobUrl);
+      showToast("Report downloaded!");
+    } catch (e) {
+      showToast(e.message || "Download failed");
+    }
   };
 
   // -----------------------------
