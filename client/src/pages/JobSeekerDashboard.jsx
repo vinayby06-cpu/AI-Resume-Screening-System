@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 // ✅ Use env in deploy, fallback to Render backend, then localhost for local dev
-const API_BASE =
+const API_BASE_RAW =
   process.env.REACT_APP_API_BASE ||
   (window.location.hostname === "localhost"
     ? "http://localhost:5000"
     : "https://ai-resume-screening-system-vinay.onrender.com");
+
+// ✅ normalize (avoid double slashes)
+const API_BASE = (API_BASE_RAW || "").replace(/\/+$/, "");
 
 const getToken = () => localStorage.getItem("token") || "";
 const getUser = () => {
@@ -16,13 +19,14 @@ const getUser = () => {
   }
 };
 
-// 🔥 API helper (JSON)
+// 🔥 API helper (JSON) - JWT based (no cookies)
 async function apiFetch(path, options = {}) {
   const token = getToken();
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
-    credentials: "include",
+    // ✅ IMPORTANT: you are using JWT, not cookies -> remove credentials
+    // credentials: "include",
     headers: {
       Accept: "application/json",
       ...(options.body && !(options.body instanceof FormData)
@@ -93,9 +97,10 @@ export default function JobSeekerDashboard() {
   // -----------------------------
   const loadJobs = async () => {
     const data = await apiFetch("/api/jobs");
-    setJobs(Array.isArray(data) ? data : []);
-    if (!selectedJobId && Array.isArray(data) && data.length) {
-      setSelectedJobId(data[0]._id);
+    const list = Array.isArray(data) ? data : [];
+    setJobs(list);
+    if (!selectedJobId && list.length) {
+      setSelectedJobId(list[0]._id);
     }
   };
 
@@ -136,12 +141,13 @@ export default function JobSeekerDashboard() {
 
       const formData = new FormData();
       formData.append("resume", resumeFile);
+
+      // backend supports upload without these fields, but keep them (safe)
       formData.append("jobId", selectedJobId || "");
       formData.append("jobDescription", jobDescription || "");
 
       const res = await fetch(`${API_BASE}/api/jobseeker/analyze`, {
         method: "POST",
-        credentials: "include",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,
       });
@@ -163,12 +169,15 @@ export default function JobSeekerDashboard() {
 
       if (!res.ok) throw new Error(data?.message || "Analyze failed");
 
-      setAnalysisId(data.analysisId || data._id || null);
+      // ✅ FIX: backend returns { analysis: {...} }
+      const analysis = data.analysis || data;
 
-      setAtsScore(data.atsScore ?? 0);
-      setMatchedSkills(Array.isArray(data.matchedSkills) ? data.matchedSkills : []);
-      setMissingSkills(Array.isArray(data.missingSkills) ? data.missingSkills : []);
-      setRecommendations(Array.isArray(data.recommendations) ? data.recommendations : []);
+      setAnalysisId(analysis?._id || null);
+
+      setAtsScore(analysis?.atsScore ?? 0);
+      setMatchedSkills(Array.isArray(analysis?.matchedSkills) ? analysis.matchedSkills : []);
+      setMissingSkills(Array.isArray(analysis?.missingSkills) ? analysis.missingSkills : []);
+      setRecommendations(Array.isArray(analysis?.recommendations) ? analysis.recommendations : []);
 
       showToast("Resume analyzed successfully!");
       await loadHistory();
@@ -183,8 +192,9 @@ export default function JobSeekerDashboard() {
   // Apply to Job
   // -----------------------------
   const handleApply = async () => {
-    if (!analysisId) {
-      showToast("Analyze resume first.");
+    // ✅ FIX: backend apply expects jobId (not analysisId)
+    if (!selectedJobId) {
+      showToast("Please select a job first.");
       return;
     }
 
@@ -192,7 +202,10 @@ export default function JobSeekerDashboard() {
     try {
       await apiFetch("/api/jobseeker/apply", {
         method: "POST",
-        body: JSON.stringify({ analysisId }),
+        body: JSON.stringify({
+          jobId: selectedJobId,
+          name: name || "Applicant",
+        }),
       });
 
       showToast("Applied successfully!");
@@ -208,39 +221,9 @@ export default function JobSeekerDashboard() {
   // Download Report PDF
   // -----------------------------
   const handleDownloadReport = async () => {
-    if (!analysisId) {
-      showToast("Analyze resume first.");
-      return;
-    }
-
-    try {
-      const token = getToken();
-      const res = await fetch(`${API_BASE}/api/jobseeker/report/${analysisId}`, {
-        credentials: "include",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-
-      if (res.status === 401) {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
-        window.location.href = "/login";
-        throw new Error("Session expired. Please login again.");
-      }
-
-      if (!res.ok) throw new Error("Failed to download report");
-
-      const blob = await res.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = `ATS_Report_${analysisId}.pdf`;
-      a.click();
-
-      window.URL.revokeObjectURL(blobUrl);
-    } catch (e) {
-      showToast(e.message || "Download failed");
-    }
+    // ✅ NOTE: Backend does not have /api/jobseeker/report/:id unless you add it.
+    // For now, show a clear message instead of failing silently.
+    showToast("Report download API not added in backend yet.");
   };
 
   // -----------------------------
