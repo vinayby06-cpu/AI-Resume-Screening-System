@@ -165,7 +165,7 @@ const logSchema = new mongoose.Schema(
 );
 const Log = mongoose.models.Log || mongoose.model("Log", logSchema);
 
-/* ✅ Admin settings (so your PUT /api/admin/settings works) */
+/* ✅ Admin settings */
 const settingsSchema = new mongoose.Schema(
   {
     allowRegistration: { type: Boolean, default: true },
@@ -214,7 +214,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-/* ✅ Debug endpoint: list routes (helps “API route not found”) */
+/* ✅ Debug endpoint: list routes */
 app.get("/api/routes", (req, res) => {
   const routes = [];
   app._router.stack.forEach((m) => {
@@ -226,7 +226,7 @@ app.get("/api/routes", (req, res) => {
   res.json({ routes });
 });
 
-/* ✅ Who am I (useful for dashboards) */
+/* ✅ Who am I */
 app.get("/api/me", verifyToken, async (req, res) => {
   try {
     const email = req.user?.email || "";
@@ -248,7 +248,6 @@ app.post("/api/auth/register", async (req, res) => {
     password = String(password || "");
     role = normalizeText(role);
 
-    // Optional: block registration if admin turned it off
     const s = await Settings.findOne({});
     if (s && s.allowRegistration === false) {
       return res.status(403).json({ message: "Registration is disabled" });
@@ -335,7 +334,8 @@ app.get("/api/jobs", async (req, res) => {
 });
 
 /* ================== RECRUITER ================== */
-app.get("/api/recruiter/stats", verifyToken, requireRole(["recruiter"]), async (req, res) => {
+/* ✅ Shared stats logic so GET + POST both work */
+async function recruiterStatsHandler(req, res) {
   try {
     const recruiterEmail = req.user?.email || "";
     const totalJobs = await Job.countDocuments({ postedBy: recruiterEmail });
@@ -352,7 +352,11 @@ app.get("/api/recruiter/stats", verifyToken, requireRole(["recruiter"]), async (
     console.error("RECRUITER STATS ERROR:", err);
     return res.status(500).json({ message: "Failed to load stats" });
   }
-});
+}
+
+/* ✅ Works for both GET and POST (fixes your current frontend call) */
+app.get("/api/recruiter/stats", verifyToken, requireRole(["recruiter"]), recruiterStatsHandler);
+app.post("/api/recruiter/stats", verifyToken, requireRole(["recruiter"]), recruiterStatsHandler);
 
 app.post("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (req, res) => {
   try {
@@ -511,7 +515,6 @@ app.post(
       const resumeFile = req.file ? `/uploads/${req.file.filename}` : "";
       if (!resumeFile) return res.status(400).json({ message: "Resume file is required" });
 
-      // Placeholder analysis (plug your ATS logic here)
       const analysis = await Analysis.create({
         userId,
         userEmail,
@@ -573,7 +576,6 @@ app.get("/api/admin/stats", verifyToken, requireRole(["admin"]), async (req, res
   }
 });
 
-/* ✅ Admin: list users */
 app.get("/api/admin/users", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const users = await User.find({})
@@ -586,7 +588,6 @@ app.get("/api/admin/users", verifyToken, requireRole(["admin"]), async (req, res
   }
 });
 
-/* ✅ AdminDashboard expects: PUT /api/admin/users/:id/role */
 app.put("/api/admin/users/:id/role", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const id = req.params.id;
@@ -615,7 +616,6 @@ app.put("/api/admin/users/:id/role", verifyToken, requireRole(["admin"]), async 
   }
 });
 
-/* ✅ AdminDashboard expects: DELETE /api/admin/users/:id */
 app.delete("/api/admin/users/:id", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const id = req.params.id;
@@ -635,7 +635,6 @@ app.delete("/api/admin/users/:id", verifyToken, requireRole(["admin"]), async (r
   }
 });
 
-/* ✅ Admin: list jobs */
 app.get("/api/admin/jobs", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const status = normalizeText(req.query?.status);
@@ -648,7 +647,6 @@ app.get("/api/admin/jobs", verifyToken, requireRole(["admin"]), async (req, res)
   }
 });
 
-/* ✅ AdminDashboard expects: PATCH /api/admin/jobs/:id/status */
 app.patch("/api/admin/jobs/:id/status", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const id = req.params.id;
@@ -674,7 +672,6 @@ app.patch("/api/admin/jobs/:id/status", verifyToken, requireRole(["admin"]), asy
   }
 });
 
-/* ✅ AdminDashboard expects: GET /api/admin/resumes */
 app.get("/api/admin/resumes", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const items = await Analysis.find({}).sort({ createdAt: -1 }).limit(500);
@@ -685,7 +682,6 @@ app.get("/api/admin/resumes", verifyToken, requireRole(["admin"]), async (req, r
   }
 });
 
-/* ✅ AdminDashboard expects: GET /api/admin/logs */
 app.get("/api/admin/logs", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const items = await Log.find({}).sort({ createdAt: -1 }).limit(200);
@@ -696,7 +692,6 @@ app.get("/api/admin/logs", verifyToken, requireRole(["admin"]), async (req, res)
   }
 });
 
-/* ✅ Admin settings: GET + PUT (your dashboard uses PUT) */
 app.get("/api/admin/settings", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     let s = await Settings.findOne({});
