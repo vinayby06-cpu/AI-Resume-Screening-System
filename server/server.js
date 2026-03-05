@@ -20,6 +20,15 @@ const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
 const normalizeText = (v) => String(v || "").trim();
 const ROLES = new Set(["admin", "recruiter", "jobseeker"]);
 
+const toSkillsArray = (skills) => {
+  if (!skills) return [];
+  if (Array.isArray(skills)) return skills.map((s) => normalizeText(s)).filter(Boolean);
+  return String(skills)
+    .split(",")
+    .map((s) => normalizeText(s))
+    .filter(Boolean);
+};
+
 /* ================== BODY PARSERS ================== */
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -126,7 +135,7 @@ const candidateSchema = new mongoose.Schema(
     jobTitle: { type: String, default: "" },
     analysisId: { type: String, default: "" },
     atsScore: { type: Number, default: 0 },
-    status: { type: String, default: "Pending" }, // Pending/Shortlisted/Rejected
+    status: { type: String, default: "Pending" },
   },
   { timestamps: true }
 );
@@ -156,6 +165,17 @@ const logSchema = new mongoose.Schema(
 );
 const Log = mongoose.models.Log || mongoose.model("Log", logSchema);
 
+/* ✅ Admin settings (so your PUT /api/admin/settings works) */
+const settingsSchema = new mongoose.Schema(
+  {
+    allowRegistration: { type: Boolean, default: true },
+    enableResumeUpload: { type: Boolean, default: true },
+    maintenanceMode: { type: Boolean, default: false },
+  },
+  { timestamps: true }
+);
+const Settings = mongoose.models.Settings || mongoose.model("Settings", settingsSchema);
+
 /* ================== AUTH ================== */
 const verifyToken = (req, res, next) => {
   try {
@@ -176,15 +196,6 @@ const requireRole = (roles = []) => (req, res, next) => {
   next();
 };
 
-const toSkillsArray = (skills) => {
-  if (!skills) return [];
-  if (Array.isArray(skills)) return skills.map((s) => normalizeText(s)).filter(Boolean);
-  return String(skills)
-    .split(",")
-    .map((s) => normalizeText(s))
-    .filter(Boolean);
-};
-
 /* ================== MULTER ================== */
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
@@ -203,19 +214,6 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-/* ✅ Who am I (helps dashboards validate token) */
-app.get("/api/me", verifyToken, async (req, res) => {
-  try {
-    const email = req.user?.email || "";
-    const user = await User.findOne({ email }).select("_id name email role");
-    if (!user) return res.status(404).json({ message: "User not found" });
-    return res.json({ user });
-  } catch (err) {
-    console.error("ME ERROR:", err);
-    return res.status(500).json({ message: "Failed to load user" });
-  }
-});
-
 /* ✅ Debug endpoint: list routes (helps “API route not found”) */
 app.get("/api/routes", (req, res) => {
   const routes = [];
@@ -228,6 +226,19 @@ app.get("/api/routes", (req, res) => {
   res.json({ routes });
 });
 
+/* ✅ Who am I (useful for dashboards) */
+app.get("/api/me", verifyToken, async (req, res) => {
+  try {
+    const email = req.user?.email || "";
+    const user = await User.findOne({ email }).select("_id name email role createdAt");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    return res.json({ user });
+  } catch (err) {
+    console.error("ME ERROR:", err);
+    return res.status(500).json({ message: "Failed to load user" });
+  }
+});
+
 /* ================== AUTH ROUTES ================== */
 app.post("/api/auth/register", async (req, res) => {
   try {
@@ -236,6 +247,12 @@ app.post("/api/auth/register", async (req, res) => {
     email = normalizeEmail(email);
     password = String(password || "");
     role = normalizeText(role);
+
+    // Optional: block registration if admin turned it off
+    const s = await Settings.findOne({});
+    if (s && s.allowRegistration === false) {
+      return res.status(403).json({ message: "Registration is disabled" });
+    }
 
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: "All fields are required" });
@@ -324,25 +341,19 @@ app.get("/api/recruiter/stats", verifyToken, requireRole(["recruiter"]), async (
     const totalJobs = await Job.countDocuments({ postedBy: recruiterEmail });
     const totalCandidates = await Candidate.countDocuments({ recruiterEmail });
 
-    // Optional: compute average ATS from candidates
     const agg = await Candidate.aggregate([
       { $match: { recruiterEmail } },
       { $group: { _id: null, avg: { $avg: "$atsScore" } } },
     ]);
     const averageATS = agg?.[0]?.avg ? Number(agg[0].avg).toFixed(1) : "0.0";
 
-    return res.json({
-      totalJobs,
-      totalCandidates,
-      averageATS,
-    });
+    return res.json({ totalJobs, totalCandidates, averageATS });
   } catch (err) {
     console.error("RECRUITER STATS ERROR:", err);
     return res.status(500).json({ message: "Failed to load stats" });
   }
 });
 
-/* ✅ Recruiter: create job (pending) */
 app.post("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (req, res) => {
   try {
     let { title, skills } = req.body || {};
@@ -368,7 +379,6 @@ app.post("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (
   }
 });
 
-/* ✅ Recruiter: list my jobs (all statuses) */
 app.get("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (req, res) => {
   try {
     const recruiterEmail = req.user?.email || "";
@@ -380,7 +390,6 @@ app.get("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (r
   }
 });
 
-/* ✅ Recruiter: list my candidates */
 app.get(
   "/api/recruiter/candidates",
   verifyToken,
@@ -397,7 +406,6 @@ app.get(
   }
 );
 
-/* ✅ Recruiter: update candidate status */
 app.patch(
   "/api/recruiter/candidates/:id/status",
   verifyToken,
@@ -433,7 +441,6 @@ app.patch(
 );
 
 /* ================== JOBSEEKER ================== */
-/* ✅ Apply to a job */
 app.post("/api/jobseeker/apply", verifyToken, requireRole(["jobseeker"]), async (req, res) => {
   try {
     const jobseekerEmail = req.user?.email || "";
@@ -448,7 +455,6 @@ app.post("/api/jobseeker/apply", verifyToken, requireRole(["jobseeker"]), async 
       return res.status(404).json({ message: "Job not found or not approved" });
     }
 
-    // prevent duplicate apply
     const existing = await Candidate.findOne({ email: jobseekerEmail, jobId: job._id.toString() });
     if (existing) return res.status(409).json({ message: "Already applied to this job" });
 
@@ -471,7 +477,6 @@ app.post("/api/jobseeker/apply", verifyToken, requireRole(["jobseeker"]), async 
   }
 });
 
-/* ✅ Jobseeker: my applications */
 app.get(
   "/api/jobseeker/applications",
   verifyToken,
@@ -488,7 +493,6 @@ app.get(
   }
 );
 
-/* ✅ Jobseeker: upload resume + create analysis record (basic placeholder) */
 app.post(
   "/api/jobseeker/analyze",
   verifyToken,
@@ -496,13 +500,18 @@ app.post(
   upload.single("resume"),
   async (req, res) => {
     try {
+      const s = await Settings.findOne({});
+      if (s && s.enableResumeUpload === false) {
+        return res.status(403).json({ message: "Resume upload is disabled" });
+      }
+
       const userId = req.user?.id || "";
       const userEmail = req.user?.email || "";
 
       const resumeFile = req.file ? `/uploads/${req.file.filename}` : "";
       if (!resumeFile) return res.status(400).json({ message: "Resume file is required" });
 
-      // Placeholder analysis (you can plug your real ATS logic here)
+      // Placeholder analysis (plug your ATS logic here)
       const analysis = await Analysis.create({
         userId,
         userEmail,
@@ -524,7 +533,6 @@ app.post(
   }
 );
 
-/* ✅ Jobseeker: my analysis history */
 app.get("/api/jobseeker/history", verifyToken, requireRole(["jobseeker"]), async (req, res) => {
   try {
     const userId = req.user?.id || "";
@@ -540,50 +548,28 @@ app.get("/api/jobseeker/history", verifyToken, requireRole(["jobseeker"]), async
 app.get("/api/admin/stats", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({});
-    const totalJobs = await Job.countDocuments({});
-    const pendingJobs = await Job.countDocuments({ status: "pending" });
-    const totalCandidates = await Candidate.countDocuments({});
-    const totalAnalyses = await Analysis.countDocuments({});
+    const totalRecruiters = await User.countDocuments({ role: "recruiter" });
+    const totalJobSeekers = await User.countDocuments({ role: "jobseeker" });
 
-    return res.json({ totalUsers, totalJobs, pendingJobs, totalCandidates, totalAnalyses });
+    const totalJobs = await Job.countDocuments({});
+    const totalResumes = await Analysis.countDocuments({});
+    const totalLogs = await Log.countDocuments({});
+
+    const agg = await Analysis.aggregate([{ $group: { _id: null, avg: { $avg: "$atsScore" } } }]);
+    const avgScore = agg?.[0]?.avg ? Number(agg[0].avg).toFixed(1) : 0;
+
+    return res.json({
+      totalUsers,
+      totalRecruiters,
+      totalJobSeekers,
+      totalJobs,
+      totalResumes,
+      totalLogs,
+      avgScore,
+    });
   } catch (err) {
     console.error("ADMIN STATS ERROR:", err);
     return res.status(500).json({ message: "Failed to load admin stats" });
-  }
-});
-
-/* ✅ Admin: list jobs (filter by status optional) */
-app.get("/api/admin/jobs", verifyToken, requireRole(["admin"]), async (req, res) => {
-  try {
-    const status = normalizeText(req.query?.status);
-    const filter = status ? { status } : {};
-    const jobs = await Job.find(filter).sort({ createdAt: -1 });
-    return res.json(jobs);
-  } catch (err) {
-    console.error("ADMIN GET JOBS ERROR:", err);
-    return res.status(500).json({ message: "Failed to load jobs" });
-  }
-});
-
-/* ✅ Admin: approve/reject job */
-app.patch("/api/admin/jobs/:id/status", verifyToken, requireRole(["admin"]), async (req, res) => {
-  try {
-    const id = req.params.id;
-    const status = normalizeText(req.body?.status);
-
-    if (!["pending", "approved", "rejected"].includes(status)) {
-      return res.status(400).json({ message: "Invalid status" });
-    }
-
-    const job = await Job.findByIdAndUpdate(id, { status }, { new: true });
-    if (!job) return res.status(404).json({ message: "Job not found" });
-
-    await Log.create({ level: "info", message: `Admin set job status -> ${status}`, actor: req.user?.email });
-
-    return res.json({ message: "Job status updated", job });
-  } catch (err) {
-    console.error("ADMIN UPDATE JOB STATUS ERROR:", err);
-    return res.status(500).json({ message: "Failed to update job status" });
   }
 });
 
@@ -600,14 +586,156 @@ app.get("/api/admin/users", verifyToken, requireRole(["admin"]), async (req, res
   }
 });
 
-/* ✅ Admin: list logs */
+/* ✅ AdminDashboard expects: PUT /api/admin/users/:id/role */
+app.put("/api/admin/users/:id/role", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const role = normalizeText(req.body?.role);
+
+    if (!ROLES.has(role)) return res.status(400).json({ message: "Invalid role" });
+
+    const updated = await User.findByIdAndUpdate(
+      id,
+      { role },
+      { new: true, select: "_id name email role createdAt" }
+    );
+
+    if (!updated) return res.status(404).json({ message: "User not found" });
+
+    await Log.create({
+      level: "info",
+      message: `Admin updated user role -> ${role}`,
+      actor: req.user?.email,
+    });
+
+    return res.json({ message: "Role updated", user: updated });
+  } catch (err) {
+    console.error("ADMIN UPDATE ROLE ERROR:", err);
+    return res.status(500).json({ message: "Failed to update role" });
+  }
+});
+
+/* ✅ AdminDashboard expects: DELETE /api/admin/users/:id */
+app.delete("/api/admin/users/:id", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const user = await User.findByIdAndDelete(id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    await Log.create({
+      level: "info",
+      message: "Admin deleted user",
+      actor: req.user?.email,
+    });
+
+    return res.json({ message: "User deleted" });
+  } catch (err) {
+    console.error("ADMIN DELETE USER ERROR:", err);
+    return res.status(500).json({ message: "Failed to delete user" });
+  }
+});
+
+/* ✅ Admin: list jobs */
+app.get("/api/admin/jobs", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const status = normalizeText(req.query?.status);
+    const filter = status ? { status } : {};
+    const jobs = await Job.find(filter).sort({ createdAt: -1 });
+    return res.json(jobs);
+  } catch (err) {
+    console.error("ADMIN GET JOBS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load jobs" });
+  }
+});
+
+/* ✅ AdminDashboard expects: PATCH /api/admin/jobs/:id/status */
+app.patch("/api/admin/jobs/:id/status", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const status = normalizeText(req.body?.status);
+
+    if (!["pending", "approved", "rejected"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+
+    const job = await Job.findByIdAndUpdate(id, { status }, { new: true });
+    if (!job) return res.status(404).json({ message: "Job not found" });
+
+    await Log.create({
+      level: "info",
+      message: `Admin set job status -> ${status}`,
+      actor: req.user?.email,
+    });
+
+    return res.json({ message: "Job status updated", job });
+  } catch (err) {
+    console.error("ADMIN UPDATE JOB STATUS ERROR:", err);
+    return res.status(500).json({ message: "Failed to update job status" });
+  }
+});
+
+/* ✅ AdminDashboard expects: GET /api/admin/resumes */
+app.get("/api/admin/resumes", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const items = await Analysis.find({}).sort({ createdAt: -1 }).limit(500);
+    return res.json(items);
+  } catch (err) {
+    console.error("ADMIN GET RESUMES ERROR:", err);
+    return res.status(500).json({ message: "Failed to load resumes" });
+  }
+});
+
+/* ✅ AdminDashboard expects: GET /api/admin/logs */
 app.get("/api/admin/logs", verifyToken, requireRole(["admin"]), async (req, res) => {
   try {
-    const logs = await Log.find({}).sort({ createdAt: -1 }).limit(200);
-    return res.json(logs);
+    const items = await Log.find({}).sort({ createdAt: -1 }).limit(200);
+    return res.json(items);
   } catch (err) {
     console.error("ADMIN GET LOGS ERROR:", err);
     return res.status(500).json({ message: "Failed to load logs" });
+  }
+});
+
+/* ✅ Admin settings: GET + PUT (your dashboard uses PUT) */
+app.get("/api/admin/settings", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    let s = await Settings.findOne({});
+    if (!s) s = await Settings.create({});
+    return res.json({
+      allowRegistration: !!s.allowRegistration,
+      enableResumeUpload: !!s.enableResumeUpload,
+      maintenanceMode: !!s.maintenanceMode,
+    });
+  } catch (err) {
+    console.error("ADMIN GET SETTINGS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load settings" });
+  }
+});
+
+app.put("/api/admin/settings", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const allowRegistration = !!req.body?.allowRegistration;
+    const enableResumeUpload = !!req.body?.enableResumeUpload;
+    const maintenanceMode = !!req.body?.maintenanceMode;
+
+    let s = await Settings.findOne({});
+    if (!s) s = await Settings.create({});
+
+    s.allowRegistration = allowRegistration;
+    s.enableResumeUpload = enableResumeUpload;
+    s.maintenanceMode = maintenanceMode;
+    await s.save();
+
+    await Log.create({
+      level: "info",
+      message: "Admin updated system settings",
+      actor: req.user?.email,
+    });
+
+    return res.json({ message: "Settings saved" });
+  } catch (err) {
+    console.error("ADMIN SAVE SETTINGS ERROR:", err);
+    return res.status(500).json({ message: "Failed to save settings" });
   }
 });
 
