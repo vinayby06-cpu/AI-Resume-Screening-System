@@ -3,11 +3,14 @@ import axios from "axios";
 import { useNavigate } from "react-router-dom";
 
 // ✅ Use env in deploy, fallback to Render backend, then localhost for local dev
-const API =
+const API_RAW =
   process.env.REACT_APP_API_BASE ||
   (window.location.hostname === "localhost"
     ? "http://localhost:5000"
     : "https://ai-resume-screening-system-vinay.onrender.com");
+
+// ✅ normalize (avoid double slashes)
+const API = (API_RAW || "").replace(/\/+$/, "");
 
 export default function RecruiterDashboard() {
   // ===== Router =====
@@ -49,7 +52,7 @@ export default function RecruiterDashboard() {
   }, [token]);
 
   const parseSkills = (skillsText) => {
-    return skillsText
+    return String(skillsText || "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
@@ -70,20 +73,52 @@ export default function RecruiterDashboard() {
     }
   }, [token, navigate]);
 
-  // ----------------- API Calls -----------------
-  const fetchAnalytics = async () => {
-    const res = await axios.get(`${API}/api/analytics`, authHeader);
-    setAnalytics(res.data || { totalJobs: 0, totalCandidates: 0, averageATS: 0 });
+  // ✅ Handle 401 globally for axios errors
+  const handleApiError = (e) => {
+    // token expired / invalid -> logout
+    if (e?.response?.status === 401) {
+      localStorage.removeItem("token");
+      localStorage.removeItem("role");
+      localStorage.removeItem("user");
+      navigate("/login");
+      return "Session expired. Please login again.";
+    }
+
+    // show backend error message
+    return (
+      e?.response?.data?.message ||
+      e?.message ||
+      "Request failed. Please try again."
+    );
   };
 
+  // ----------------- API Calls -----------------
+  // ✅ FIXED: backend route is /api/recruiter/stats (GET or POST supported by updated server.js)
+  const fetchAnalytics = async () => {
+    // Some of your backend earlier returned averageATS as string ("0.0")
+    const res = await axios.get(`${API}/api/recruiter/stats`, authHeader);
+    const data = res.data || {};
+    setAnalytics({
+      totalJobs: data.totalJobs ?? 0,
+      totalCandidates: data.totalCandidates ?? 0,
+      averageATS: Number(data.averageATS ?? 0),
+    });
+  };
+
+  // ✅ FIXED: backend route is /api/recruiter/jobs (GET)
+  // backend returns array => setJobs(res.data)
   const fetchJobs = async () => {
     const res = await axios.get(`${API}/api/recruiter/jobs`, authHeader);
-    setJobs(res.data?.jobs || []);
+    const list = Array.isArray(res.data) ? res.data : res.data?.jobs || [];
+    setJobs(list);
   };
 
+  // ✅ FIXED: backend route is /api/recruiter/candidates (GET)
+  // backend returns array => setCandidates(res.data)
   const fetchCandidates = async () => {
     const res = await axios.get(`${API}/api/recruiter/candidates`, authHeader);
-    setCandidates(res.data?.candidates || []);
+    const list = Array.isArray(res.data) ? res.data : res.data?.candidates || [];
+    setCandidates(list);
   };
 
   const refreshAll = async () => {
@@ -99,12 +134,8 @@ export default function RecruiterDashboard() {
 
       await Promise.all([fetchAnalytics(), fetchJobs(), fetchCandidates()]);
     } catch (e) {
-      console.error(e);
-      const msg =
-        e?.response?.data?.message ||
-        e?.message ||
-        "Failed to load dashboard data.";
-      setError(msg);
+      console.error("DASHBOARD LOAD ERROR:", e);
+      setError(handleApiError(e));
     } finally {
       setLoading(false);
     }
@@ -130,14 +161,20 @@ export default function RecruiterDashboard() {
         return;
       }
 
-      await axios.post(`${API}/api/jobs`, { title, skills: skillsArr }, authHeader);
+      // ✅ FIXED: recruiter posts to /api/recruiter/jobs
+      // backend accepts skills as array or comma string, both ok
+      await axios.post(
+        `${API}/api/recruiter/jobs`,
+        { title, skills: skillsArr },
+        authHeader
+      );
 
       setJobForm({ title: "", skills: "" });
       await refreshAll();
-      alert("✅ Job posted successfully");
+      alert("✅ Job posted successfully (Pending approval)");
     } catch (e) {
-      console.error(e);
-      setError(e?.response?.data?.message || "Job posting failed.");
+      console.error("POST JOB ERROR:", e);
+      setError(handleApiError(e));
     } finally {
       setPostingJob(false);
     }
@@ -148,14 +185,19 @@ export default function RecruiterDashboard() {
       setStatusUpdatingId(candidateId);
       setError("");
 
-      await axios.put(`${API}/api/candidates/${candidateId}`, { status }, authHeader);
+      // ✅ FIXED: backend route is PATCH /api/recruiter/candidates/:id/status
+      await axios.patch(
+        `${API}/api/recruiter/candidates/${candidateId}/status`,
+        { status },
+        authHeader
+      );
 
       await fetchCandidates();
       await fetchAnalytics();
       alert(`✅ Candidate ${status}`);
     } catch (e) {
-      console.error(e);
-      setError(e?.response?.data?.message || "Status update failed.");
+      console.error("UPDATE STATUS ERROR:", e);
+      setError(handleApiError(e));
     } finally {
       setStatusUpdatingId(null);
     }
