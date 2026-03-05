@@ -110,7 +110,7 @@ const jobSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
     skills: { type: [String], default: [] },
-    postedBy: { type: String, default: "" },
+    postedBy: { type: String, default: "" }, // recruiterEmail
     status: { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
   },
   { timestamps: true }
@@ -120,13 +120,13 @@ const Job = mongoose.models.Job || mongoose.model("Job", jobSchema);
 const candidateSchema = new mongoose.Schema(
   {
     name: { type: String, default: "Applicant" },
-    email: { type: String, required: true },
+    email: { type: String, required: true }, // jobseeker email
     recruiterEmail: { type: String, default: "" },
     jobId: { type: String, default: "" },
     jobTitle: { type: String, default: "" },
     analysisId: { type: String, default: "" },
     atsScore: { type: Number, default: 0 },
-    status: { type: String, default: "Pending" },
+    status: { type: String, default: "Pending" }, // Pending/Shortlisted/Rejected
   },
   { timestamps: true }
 );
@@ -176,6 +176,15 @@ const requireRole = (roles = []) => (req, res, next) => {
   next();
 };
 
+const toSkillsArray = (skills) => {
+  if (!skills) return [];
+  if (Array.isArray(skills)) return skills.map((s) => normalizeText(s)).filter(Boolean);
+  return String(skills)
+    .split(",")
+    .map((s) => normalizeText(s))
+    .filter(Boolean);
+};
+
 /* ================== MULTER ================== */
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
@@ -192,6 +201,19 @@ app.get("/api/health", (req, res) => {
     time: new Date().toISOString(),
     mongoReadyState: mongoose.connection.readyState,
   });
+});
+
+/* ✅ Who am I (helps dashboards validate token) */
+app.get("/api/me", verifyToken, async (req, res) => {
+  try {
+    const email = req.user?.email || "";
+    const user = await User.findOne({ email }).select("_id name email role");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    return res.json({ user });
+  } catch (err) {
+    console.error("ME ERROR:", err);
+    return res.status(500).json({ message: "Failed to load user" });
+  }
 });
 
 /* ✅ Debug endpoint: list routes (helps “API route not found”) */
@@ -284,7 +306,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-/* ================== JOBS ================== */
+/* ================== PUBLIC JOBS ================== */
 app.get("/api/jobs", async (req, res) => {
   try {
     const jobs = await Job.find({ status: "approved" }).sort({ createdAt: -1 });
@@ -302,14 +324,290 @@ app.get("/api/recruiter/stats", verifyToken, requireRole(["recruiter"]), async (
     const totalJobs = await Job.countDocuments({ postedBy: recruiterEmail });
     const totalCandidates = await Candidate.countDocuments({ recruiterEmail });
 
+    // Optional: compute average ATS from candidates
+    const agg = await Candidate.aggregate([
+      { $match: { recruiterEmail } },
+      { $group: { _id: null, avg: { $avg: "$atsScore" } } },
+    ]);
+    const averageATS = agg?.[0]?.avg ? Number(agg[0].avg).toFixed(1) : "0.0";
+
     return res.json({
       totalJobs,
       totalCandidates,
-      averageATS: "0.0",
+      averageATS,
     });
   } catch (err) {
     console.error("RECRUITER STATS ERROR:", err);
     return res.status(500).json({ message: "Failed to load stats" });
+  }
+});
+
+/* ✅ Recruiter: create job (pending) */
+app.post("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (req, res) => {
+  try {
+    let { title, skills } = req.body || {};
+    title = normalizeText(title);
+    const skillsArr = toSkillsArray(skills);
+
+    if (!title) return res.status(400).json({ message: "Job title is required" });
+
+    const recruiterEmail = req.user?.email || "";
+    const job = await Job.create({
+      title,
+      skills: skillsArr,
+      postedBy: recruiterEmail,
+      status: "pending",
+    });
+
+    await Log.create({ level: "info", message: "Recruiter posted job", actor: recruiterEmail });
+
+    return res.status(201).json({ message: "Job created (pending approval)", job });
+  } catch (err) {
+    console.error("RECRUITER CREATE JOB ERROR:", err);
+    return res.status(500).json({ message: "Failed to create job" });
+  }
+});
+
+/* ✅ Recruiter: list my jobs (all statuses) */
+app.get("/api/recruiter/jobs", verifyToken, requireRole(["recruiter"]), async (req, res) => {
+  try {
+    const recruiterEmail = req.user?.email || "";
+    const jobs = await Job.find({ postedBy: recruiterEmail }).sort({ createdAt: -1 });
+    return res.json(jobs);
+  } catch (err) {
+    console.error("RECRUITER GET JOBS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load recruiter jobs" });
+  }
+});
+
+/* ✅ Recruiter: list my candidates */
+app.get(
+  "/api/recruiter/candidates",
+  verifyToken,
+  requireRole(["recruiter"]),
+  async (req, res) => {
+    try {
+      const recruiterEmail = req.user?.email || "";
+      const candidates = await Candidate.find({ recruiterEmail }).sort({ createdAt: -1 });
+      return res.json(candidates);
+    } catch (err) {
+      console.error("RECRUITER GET CANDIDATES ERROR:", err);
+      return res.status(500).json({ message: "Failed to load candidates" });
+    }
+  }
+);
+
+/* ✅ Recruiter: update candidate status */
+app.patch(
+  "/api/recruiter/candidates/:id/status",
+  verifyToken,
+  requireRole(["recruiter"]),
+  async (req, res) => {
+    try {
+      const recruiterEmail = req.user?.email || "";
+      const id = req.params.id;
+      const status = normalizeText(req.body?.status);
+
+      if (!status) return res.status(400).json({ message: "Status is required" });
+
+      const cand = await Candidate.findOneAndUpdate(
+        { _id: id, recruiterEmail },
+        { status },
+        { new: true }
+      );
+
+      if (!cand) return res.status(404).json({ message: "Candidate not found" });
+
+      await Log.create({
+        level: "info",
+        message: `Recruiter updated candidate status -> ${status}`,
+        actor: recruiterEmail,
+      });
+
+      return res.json({ message: "Status updated", candidate: cand });
+    } catch (err) {
+      console.error("RECRUITER UPDATE CANDIDATE STATUS ERROR:", err);
+      return res.status(500).json({ message: "Failed to update status" });
+    }
+  }
+);
+
+/* ================== JOBSEEKER ================== */
+/* ✅ Apply to a job */
+app.post("/api/jobseeker/apply", verifyToken, requireRole(["jobseeker"]), async (req, res) => {
+  try {
+    const jobseekerEmail = req.user?.email || "";
+    let { jobId, name } = req.body || {};
+    jobId = normalizeText(jobId);
+    name = normalizeText(name) || "Applicant";
+
+    if (!jobId) return res.status(400).json({ message: "jobId is required" });
+
+    const job = await Job.findById(jobId);
+    if (!job || job.status !== "approved") {
+      return res.status(404).json({ message: "Job not found or not approved" });
+    }
+
+    // prevent duplicate apply
+    const existing = await Candidate.findOne({ email: jobseekerEmail, jobId: job._id.toString() });
+    if (existing) return res.status(409).json({ message: "Already applied to this job" });
+
+    const cand = await Candidate.create({
+      name,
+      email: jobseekerEmail,
+      recruiterEmail: job.postedBy,
+      jobId: job._id.toString(),
+      jobTitle: job.title,
+      atsScore: 0,
+      status: "Pending",
+    });
+
+    await Log.create({ level: "info", message: "Jobseeker applied", actor: jobseekerEmail });
+
+    return res.status(201).json({ message: "Applied successfully", candidate: cand });
+  } catch (err) {
+    console.error("JOBSEEKER APPLY ERROR:", err);
+    return res.status(500).json({ message: "Failed to apply" });
+  }
+});
+
+/* ✅ Jobseeker: my applications */
+app.get(
+  "/api/jobseeker/applications",
+  verifyToken,
+  requireRole(["jobseeker"]),
+  async (req, res) => {
+    try {
+      const jobseekerEmail = req.user?.email || "";
+      const apps = await Candidate.find({ email: jobseekerEmail }).sort({ createdAt: -1 });
+      return res.json(apps);
+    } catch (err) {
+      console.error("JOBSEEKER APPLICATIONS ERROR:", err);
+      return res.status(500).json({ message: "Failed to load applications" });
+    }
+  }
+);
+
+/* ✅ Jobseeker: upload resume + create analysis record (basic placeholder) */
+app.post(
+  "/api/jobseeker/analyze",
+  verifyToken,
+  requireRole(["jobseeker"]),
+  upload.single("resume"),
+  async (req, res) => {
+    try {
+      const userId = req.user?.id || "";
+      const userEmail = req.user?.email || "";
+
+      const resumeFile = req.file ? `/uploads/${req.file.filename}` : "";
+      if (!resumeFile) return res.status(400).json({ message: "Resume file is required" });
+
+      // Placeholder analysis (you can plug your real ATS logic here)
+      const analysis = await Analysis.create({
+        userId,
+        userEmail,
+        resumeFile,
+        atsScore: 0,
+        matchedSkills: [],
+        missingSkills: [],
+        recommendations: [],
+        status: "Pending",
+      });
+
+      await Log.create({ level: "info", message: "Jobseeker uploaded resume", actor: userEmail });
+
+      return res.status(201).json({ message: "Analysis created", analysis });
+    } catch (err) {
+      console.error("JOBSEEKER ANALYZE ERROR:", err);
+      return res.status(500).json({ message: "Failed to analyze resume" });
+    }
+  }
+);
+
+/* ✅ Jobseeker: my analysis history */
+app.get("/api/jobseeker/history", verifyToken, requireRole(["jobseeker"]), async (req, res) => {
+  try {
+    const userId = req.user?.id || "";
+    const list = await Analysis.find({ userId }).sort({ createdAt: -1 });
+    return res.json(list);
+  } catch (err) {
+    console.error("JOBSEEKER HISTORY ERROR:", err);
+    return res.status(500).json({ message: "Failed to load history" });
+  }
+});
+
+/* ================== ADMIN ================== */
+app.get("/api/admin/stats", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments({});
+    const totalJobs = await Job.countDocuments({});
+    const pendingJobs = await Job.countDocuments({ status: "pending" });
+    const totalCandidates = await Candidate.countDocuments({});
+    const totalAnalyses = await Analysis.countDocuments({});
+
+    return res.json({ totalUsers, totalJobs, pendingJobs, totalCandidates, totalAnalyses });
+  } catch (err) {
+    console.error("ADMIN STATS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load admin stats" });
+  }
+});
+
+/* ✅ Admin: list jobs (filter by status optional) */
+app.get("/api/admin/jobs", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const status = normalizeText(req.query?.status);
+    const filter = status ? { status } : {};
+    const jobs = await Job.find(filter).sort({ createdAt: -1 });
+    return res.json(jobs);
+  } catch (err) {
+    console.error("ADMIN GET JOBS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load jobs" });
+  }
+});
+
+/* ✅ Admin: approve/reject job */
+app.patch("/api/admin/jobs/:id/status", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const status = normalizeText(req.body?.status);
+
+    if (!["pending", "approved", "rejected"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+
+    const job = await Job.findByIdAndUpdate(id, { status }, { new: true });
+    if (!job) return res.status(404).json({ message: "Job not found" });
+
+    await Log.create({ level: "info", message: `Admin set job status -> ${status}`, actor: req.user?.email });
+
+    return res.json({ message: "Job status updated", job });
+  } catch (err) {
+    console.error("ADMIN UPDATE JOB STATUS ERROR:", err);
+    return res.status(500).json({ message: "Failed to update job status" });
+  }
+});
+
+/* ✅ Admin: list users */
+app.get("/api/admin/users", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const users = await User.find({})
+      .select("_id name email role createdAt")
+      .sort({ createdAt: -1 });
+    return res.json(users);
+  } catch (err) {
+    console.error("ADMIN GET USERS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load users" });
+  }
+});
+
+/* ✅ Admin: list logs */
+app.get("/api/admin/logs", verifyToken, requireRole(["admin"]), async (req, res) => {
+  try {
+    const logs = await Log.find({}).sort({ createdAt: -1 }).limit(200);
+    return res.json(logs);
+  } catch (err) {
+    console.error("ADMIN GET LOGS ERROR:", err);
+    return res.status(500).json({ message: "Failed to load logs" });
   }
 });
 
