@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 // ✅ Use env in deploy, fallback to Render backend, then localhost for local dev
 const API_BASE_RAW =
@@ -25,8 +26,6 @@ async function apiFetch(path, options = {}) {
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
-    // ✅ IMPORTANT: you are using JWT, not cookies -> remove credentials
-    // credentials: "include",
     headers: {
       Accept: "application/json",
       ...(options.body && !(options.body instanceof FormData)
@@ -44,12 +43,10 @@ async function apiFetch(path, options = {}) {
     data = { message: "Server returned non-JSON response" };
   }
 
-  // ✅ Auto-logout on 401
   if (res.status === 401) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    window.location.href = "/login";
-    throw new Error("Session expired. Please login again.");
+    const err = new Error("Session expired. Please login again.");
+    err.status = 401;
+    throw err;
   }
 
   if (!res.ok) throw new Error(data?.message || "Request failed");
@@ -57,6 +54,8 @@ async function apiFetch(path, options = {}) {
 }
 
 export default function JobSeekerDashboard() {
+  const navigate = useNavigate();
+
   const user = useMemo(() => getUser(), []);
   const name = user?.name || "Job Seeker";
 
@@ -87,6 +86,13 @@ export default function JobSeekerDashboard() {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
 
+  const logoutAndGoLogin = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    localStorage.removeItem("role");
+    navigate("/login");
+  };
+
   const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(""), 2500);
@@ -110,18 +116,28 @@ export default function JobSeekerDashboard() {
       const data = await apiFetch("/api/jobseeker/history");
       setHistory(Array.isArray(data) ? data : []);
     } catch (e) {
+      if (e?.status === 401) {
+        showToast("Session expired. Please login again.");
+        setTimeout(() => logoutAndGoLogin(), 400);
+        return;
+      }
       setHistoryError(e.message || "Failed to load history");
     }
   };
 
   useEffect(() => {
-    // ✅ if no token, go login
     if (!getToken()) {
-      window.location.href = "/login";
+      logoutAndGoLogin();
       return;
     }
 
-    loadJobs().catch(() => {});
+    loadJobs().catch((e) => {
+      if (e?.status === 401) {
+        showToast("Session expired. Please login again.");
+        setTimeout(() => logoutAndGoLogin(), 400);
+      }
+    });
+
     loadHistory().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -141,8 +157,6 @@ export default function JobSeekerDashboard() {
 
       const formData = new FormData();
       formData.append("resume", resumeFile);
-
-      // backend supports upload without these fields, but keep them (safe)
       formData.append("jobId", selectedJobId || "");
       formData.append("jobDescription", jobDescription || "");
 
@@ -152,7 +166,6 @@ export default function JobSeekerDashboard() {
         body: formData,
       });
 
-      // ✅ safe JSON parse
       let data = null;
       try {
         data = await res.json();
@@ -161,19 +174,16 @@ export default function JobSeekerDashboard() {
       }
 
       if (res.status === 401) {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
-        window.location.href = "/login";
+        showToast("Session expired. Please login again.");
+        setTimeout(() => logoutAndGoLogin(), 400);
         throw new Error("Session expired. Please login again.");
       }
 
       if (!res.ok) throw new Error(data?.message || "Analyze failed");
 
-      // ✅ FIX: backend returns { analysis: {...} }
       const analysis = data.analysis || data;
 
       setAnalysisId(analysis?._id || null);
-
       setAtsScore(analysis?.atsScore ?? 0);
       setMatchedSkills(Array.isArray(analysis?.matchedSkills) ? analysis.matchedSkills : []);
       setMissingSkills(Array.isArray(analysis?.missingSkills) ? analysis.missingSkills : []);
@@ -182,7 +192,9 @@ export default function JobSeekerDashboard() {
       showToast("Resume analyzed successfully!");
       await loadHistory();
     } catch (e) {
-      showToast(e.message || "Analyze failed");
+      if (e.message !== "Session expired. Please login again.") {
+        showToast(e.message || "Analyze failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -192,7 +204,6 @@ export default function JobSeekerDashboard() {
   // Apply to Job
   // -----------------------------
   const handleApply = async () => {
-    // ✅ FIX: backend apply expects jobId (not analysisId)
     if (!selectedJobId) {
       showToast("Please select a job first.");
       return;
@@ -211,6 +222,11 @@ export default function JobSeekerDashboard() {
       showToast("Applied successfully!");
       await loadHistory();
     } catch (e) {
+      if (e?.status === 401) {
+        showToast("Session expired. Please login again.");
+        setTimeout(() => logoutAndGoLogin(), 400);
+        return;
+      }
       showToast(e.message || "Apply failed");
     } finally {
       setLoading(false);
@@ -218,7 +234,7 @@ export default function JobSeekerDashboard() {
   };
 
   // -----------------------------
-  // Download Report PDF ✅ FIXED
+  // Download Report PDF
   // -----------------------------
   const handleDownloadReport = async () => {
     if (!analysisId) {
@@ -234,14 +250,12 @@ export default function JobSeekerDashboard() {
       });
 
       if (res.status === 401) {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
-        window.location.href = "/login";
+        showToast("Session expired. Please login again.");
+        setTimeout(() => logoutAndGoLogin(), 400);
         throw new Error("Session expired. Please login again.");
       }
 
       if (!res.ok) {
-        // backend might return JSON error -> try to read it
         let errMsg = "Failed to download report";
         try {
           const j = await res.json();
@@ -261,7 +275,9 @@ export default function JobSeekerDashboard() {
       window.URL.revokeObjectURL(blobUrl);
       showToast("Report downloaded!");
     } catch (e) {
-      showToast(e.message || "Download failed");
+      if (e.message !== "Session expired. Please login again.") {
+        showToast(e.message || "Download failed");
+      }
     }
   };
 
@@ -269,9 +285,7 @@ export default function JobSeekerDashboard() {
   // Logout
   // -----------------------------
   const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    window.location.href = "/login";
+    logoutAndGoLogin();
   };
 
   const scoreSafe = typeof atsScore === "number" ? clamp(atsScore, 0, 100) : 0;
@@ -307,10 +321,8 @@ export default function JobSeekerDashboard() {
 
   return (
     <div style={styles.page}>
-      {/* Header */}
       <div style={styles.topBar}>
         <div>
-          {/* ✅ SIMPLE HEADING (reduced size + reduced weight) */}
           <h1 style={styles.h1}>Job Seeker Dashboard</h1>
           <div style={styles.muted}>Upload resume, analyze ATS score, and apply to jobs.</div>
         </div>
@@ -330,7 +342,6 @@ export default function JobSeekerDashboard() {
       {loading ? <div style={styles.loading}>Loading...</div> : null}
       {historyError ? <div style={styles.error}>⚠ {historyError}</div> : null}
 
-      {/* Upload & Analyze */}
       <div style={styles.card}>
         <h2 style={styles.h2}>Upload & Analyze Resume</h2>
 
@@ -372,7 +383,6 @@ export default function JobSeekerDashboard() {
         </button>
       </div>
 
-      {/* Analysis Result */}
       <div style={styles.card}>
         <h2 style={styles.h2}>Analysis Result</h2>
 
@@ -381,7 +391,6 @@ export default function JobSeekerDashboard() {
         ) : (
           <>
             <div style={styles.scoreRow}>
-              {/* ✅ Donut */}
               <div style={styles.donutWrap}>
                 <Donut value={scoreSafe} />
                 <div style={{ marginTop: 10 }}>
@@ -395,7 +404,6 @@ export default function JobSeekerDashboard() {
                 </div>
               </div>
 
-              {/* ✅ Actions */}
               <div style={styles.actionGroup}>
                 <button style={styles.btnOutline} onClick={handleApply}>
                   <IconSend />
@@ -408,7 +416,6 @@ export default function JobSeekerDashboard() {
               </div>
             </div>
 
-            {/* Responsive Grid */}
             <div style={styles.grid}>
               <div style={styles.box}>
                 <h3 style={styles.h3}>Matched Skills</h3>
@@ -459,7 +466,6 @@ export default function JobSeekerDashboard() {
         )}
       </div>
 
-      {/* History */}
       <div style={styles.card}>
         <div style={styles.rowBetween}>
           <h2 style={styles.h2}>View History</h2>
@@ -469,7 +475,6 @@ export default function JobSeekerDashboard() {
           </button>
         </div>
 
-        {/* ✅ Filters */}
         <div style={styles.filterRow}>
           <input
             style={styles.input}
