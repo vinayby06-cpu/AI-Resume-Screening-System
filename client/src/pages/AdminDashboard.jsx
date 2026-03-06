@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 // ✅ Use env in deploy, fallback to Render backend, then localhost for local dev
 const API_BASE_RAW =
@@ -57,13 +58,6 @@ async function apiFetch(path, options = {}) {
     } catch {}
   }
 
-  if (res.status === 401) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    window.location.href = "/login";
-    return Promise.reject(new Error("Session expired. Please login again."));
-  }
-
   if (!res.ok) {
     const msgFromJson =
       data?.message ||
@@ -85,7 +79,9 @@ async function apiFetch(path, options = {}) {
       json: data,
     });
 
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
 
   if (data === null) {
@@ -102,6 +98,8 @@ async function apiFetch(path, options = {}) {
 }
 
 export default function AdminDashboard() {
+  const navigate = useNavigate();
+
   const [tab, setTab] = useState("analytics");
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
@@ -135,6 +133,13 @@ export default function AdminDashboard() {
   });
 
   const currentUser = getUser();
+
+  const logoutAndGoLogin = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    localStorage.removeItem("role");
+    navigate("/login");
+  };
 
   const showToast = (msg) => {
     setToast(msg);
@@ -222,7 +227,7 @@ export default function AdminDashboard() {
     try {
       if (!getToken()) {
         showToast("Token not found. Please login again.");
-        window.location.href = "/login";
+        logoutAndGoLogin();
         return;
       }
 
@@ -233,6 +238,13 @@ export default function AdminDashboard() {
       if (selectedTab === "logs") await loadLogs();
       if (selectedTab === "settings") await loadSettings();
     } catch (e) {
+      if (e?.status === 401) {
+        showToast("Session expired. Please login again.");
+        setTimeout(() => {
+          logoutAndGoLogin();
+        }, 500);
+        return;
+      }
       showToast(e.message || "Something went wrong");
     } finally {
       setLoading(false);
@@ -260,6 +272,13 @@ export default function AdminDashboard() {
       await loadUsers();
       await loadAnalytics();
     } catch (e) {
+      if (e?.status === 401) {
+        showToast("Session expired. Please login again.");
+        setTimeout(() => {
+          logoutAndGoLogin();
+        }, 500);
+        return;
+      }
       showToast(e.message || "Role update failed");
     } finally {
       setLoading(false);
@@ -283,6 +302,13 @@ export default function AdminDashboard() {
       await loadUsers();
       await loadAnalytics();
     } catch (e) {
+      if (e?.status === 401) {
+        showToast("Session expired. Please login again.");
+        setTimeout(() => {
+          logoutAndGoLogin();
+        }, 500);
+        return;
+      }
       showToast(e.message || "Delete failed");
     } finally {
       setLoading(false);
@@ -300,6 +326,13 @@ export default function AdminDashboard() {
       await loadJobs();
       await loadAnalytics();
     } catch (e) {
+      if (e?.status === 401) {
+        showToast("Session expired. Please login again.");
+        setTimeout(() => {
+          logoutAndGoLogin();
+        }, 500);
+        return;
+      }
       showToast(e.message || "Job update failed");
     } finally {
       setLoading(false);
@@ -320,6 +353,13 @@ export default function AdminDashboard() {
       showToast("Settings saved");
       await loadSettings();
     } catch (e) {
+      if (e?.status === 401) {
+        showToast("Session expired. Please login again.");
+        setTimeout(() => {
+          logoutAndGoLogin();
+        }, 500);
+        return;
+      }
       showToast(e.message || "Settings save failed");
     } finally {
       setLoading(false);
@@ -338,11 +378,7 @@ export default function AdminDashboard() {
 
         <button
           style={styles.btnOutline}
-          onClick={() => {
-            localStorage.removeItem("token");
-            localStorage.removeItem("user");
-            window.location.href = "/login";
-          }}
+          onClick={logoutAndGoLogin}
         >
           Logout
         </button>

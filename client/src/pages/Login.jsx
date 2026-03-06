@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import axios from "axios";
 
-// ✅ Works in BOTH local + deployed (even if Netlify env var is missing)
+// ✅ Backend API
 const API =
   process.env.REACT_APP_API_BASE ||
   (window.location.hostname === "localhost"
@@ -79,12 +79,10 @@ export default function Login() {
             style={styles.input}
           />
 
-          {/* ✅ Login Button */}
           <button type="submit" disabled={loading} style={styles.button}>
             {loading ? "Logging in..." : "Login"}
           </button>
 
-          {/* ✅ Register Button (New) */}
           <Link to="/register" style={styles.registerBtn}>
             Create New Account
           </Link>
