@@ -11,20 +11,23 @@ const API_BASE_RAW =
 const API_BASE = (API_BASE_RAW || "").replace(/\/+$/, "");
 
 const getToken = () => localStorage.getItem("token") || "";
+const getUser = () => {
+  try {
+    return JSON.parse(localStorage.getItem("user") || "null");
+  } catch {
+    return null;
+  }
+};
 
-// ✅ API helper (robust: handles JSON + non-JSON + gives better errors)
+// ✅ API helper
 async function apiFetch(path, options = {}) {
   const token = getToken();
-
   const url = `${API_BASE}${path}`;
 
   const res = await fetch(url, {
     ...options,
-    // ✅ IMPORTANT: you are using JWT, not cookies -> remove credentials
-    // credentials: "include",
     headers: {
       Accept: "application/json",
-      // ✅ only set JSON content-type when sending JSON body
       ...(options.body && !(options.body instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),
@@ -33,10 +36,8 @@ async function apiFetch(path, options = {}) {
     },
   });
 
-  // ✅ Try JSON first, fallback to text
   let data = null;
   let rawText = "";
-
   const contentType = res.headers.get("content-type") || "";
 
   try {
@@ -44,7 +45,6 @@ async function apiFetch(path, options = {}) {
       data = await res.json();
     } else {
       rawText = await res.text();
-      // try parse as JSON anyway (some servers send JSON without correct header)
       try {
         data = JSON.parse(rawText);
       } catch {
@@ -52,13 +52,11 @@ async function apiFetch(path, options = {}) {
       }
     }
   } catch {
-    // if parsing fails
     try {
       rawText = rawText || (await res.text());
     } catch {}
   }
 
-  // ✅ Auto logout on 401
   if (res.status === 401) {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
@@ -66,14 +64,12 @@ async function apiFetch(path, options = {}) {
     return Promise.reject(new Error("Session expired. Please login again."));
   }
 
-  // ✅ If not OK, build a helpful error message
   if (!res.ok) {
     const msgFromJson =
       data?.message ||
       data?.error ||
       (typeof data === "string" ? data : "");
 
-    // If backend returned HTML/text, show a clean message + log details
     const msg =
       msgFromJson ||
       (rawText
@@ -92,7 +88,6 @@ async function apiFetch(path, options = {}) {
     throw new Error(msg);
   }
 
-  // ✅ If ok but still no JSON
   if (data === null) {
     console.error("NON-JSON OK RESPONSE:", {
       url,
@@ -130,10 +125,16 @@ export default function AdminDashboard() {
   const [jobSearch, setJobSearch] = useState("");
 
   const [settings, setSettings] = useState({
+    appName: "AI Resume Screening System",
+    env: "development",
+    mongoReadyState: 0,
+    resetEnabled: false,
     allowRegistration: true,
     enableResumeUpload: true,
     maintenanceMode: false,
   });
+
+  const currentUser = getUser();
 
   const showToast = (msg) => {
     setToast(msg);
@@ -165,15 +166,15 @@ export default function AdminDashboard() {
   // Loaders
   // -------------------------
   const loadAnalytics = async () => {
-    const data = await apiFetch("/api/admin/stats");
+    const data = await apiFetch("/api/admin/analytics");
     setAnalytics({
       totalUsers: data.totalUsers ?? 0,
-      totalRecruiters: data.totalRecruiters ?? 0,
-      totalJobSeekers: data.totalJobSeekers ?? 0,
-      totalJobs: data.totalJobs ?? 0,
-      totalResumes: data.totalResumes ?? 0,
+      totalRecruiters: data.recruiters ?? 0,
+      totalJobSeekers: data.jobSeekers ?? 0,
+      totalJobs: data.jobs ?? 0,
+      totalResumes: data.resumes ?? 0,
       totalLogs: data.totalLogs ?? 0,
-      avgScore: data.avgScore ?? 0,
+      avgScore: data.avgMatchScore ?? 0,
     });
   };
 
@@ -197,6 +198,25 @@ export default function AdminDashboard() {
     setLogs(Array.isArray(data) ? data : data.items || []);
   };
 
+  const loadSettings = async () => {
+    const s = await apiFetch("/api/admin/settings");
+    setSettings((prev) => ({
+      ...prev,
+      appName: s.appName || "AI Resume Screening System",
+      env: s.env || "development",
+      mongoReadyState: s.mongoReadyState ?? 0,
+      resetEnabled: !!s.resetEnabled,
+      allowRegistration:
+        typeof s.allowRegistration === "boolean" ? s.allowRegistration : prev.allowRegistration,
+      enableResumeUpload:
+        typeof s.enableResumeUpload === "boolean"
+          ? s.enableResumeUpload
+          : prev.enableResumeUpload,
+      maintenanceMode:
+        typeof s.maintenanceMode === "boolean" ? s.maintenanceMode : prev.maintenanceMode,
+    }));
+  };
+
   const loadTabData = async (selectedTab) => {
     setLoading(true);
     try {
@@ -211,17 +231,7 @@ export default function AdminDashboard() {
       if (selectedTab === "jobs") await loadJobs();
       if (selectedTab === "resumes") await loadResumes();
       if (selectedTab === "logs") await loadLogs();
-
-      // ✅ (optional) If you have backend route for settings
-      if (selectedTab === "settings") {
-        // If your server has GET /api/admin/settings, you can enable this:
-        // const s = await apiFetch("/api/admin/settings");
-        // setSettings({
-        //   allowRegistration: !!s.allowRegistration,
-        //   enableResumeUpload: !!s.enableResumeUpload,
-        //   maintenanceMode: !!s.maintenanceMode,
-        // });
-      }
+      if (selectedTab === "settings") await loadSettings();
     } catch (e) {
       showToast(e.message || "Something went wrong");
     } finally {
@@ -237,15 +247,18 @@ export default function AdminDashboard() {
   // -------------------------
   // Actions
   // -------------------------
-  const updateUserRole = async (userId, role) => {
+  const updateUserRole = async (userId, currentRole, nextRole) => {
+    if (currentRole === nextRole) return;
+
     setLoading(true);
     try {
       await apiFetch(`/api/admin/users/${userId}/role`, {
-        method: "PUT",
-        body: JSON.stringify({ role }),
+        method: "PATCH",
+        body: JSON.stringify({ role: nextRole }),
       });
       showToast("Role updated");
       await loadUsers();
+      await loadAnalytics();
     } catch (e) {
       showToast(e.message || "Role update failed");
     } finally {
@@ -253,13 +266,22 @@ export default function AdminDashboard() {
     }
   };
 
-  const deleteUser = async (userId) => {
+  const deleteUser = async (userObj) => {
+    if (!userObj?._id) return;
+
+    if (userObj.role === "admin") {
+      showToast("Admin user cannot be deleted");
+      return;
+    }
+
     if (!window.confirm("Delete this user?")) return;
+
     setLoading(true);
     try {
-      await apiFetch(`/api/admin/users/${userId}`, { method: "DELETE" });
+      await apiFetch(`/api/admin/users/${userObj._id}`, { method: "DELETE" });
       showToast("User deleted");
       await loadUsers();
+      await loadAnalytics();
     } catch (e) {
       showToast(e.message || "Delete failed");
     } finally {
@@ -276,6 +298,7 @@ export default function AdminDashboard() {
       });
       showToast("Job status updated");
       await loadJobs();
+      await loadAnalytics();
     } catch (e) {
       showToast(e.message || "Job update failed");
     } finally {
@@ -288,9 +311,14 @@ export default function AdminDashboard() {
     try {
       await apiFetch(`/api/admin/settings`, {
         method: "PUT",
-        body: JSON.stringify(settings),
+        body: JSON.stringify({
+          allowRegistration: settings.allowRegistration,
+          enableResumeUpload: settings.enableResumeUpload,
+          maintenanceMode: settings.maintenanceMode,
+        }),
       });
       showToast("Settings saved");
+      await loadSettings();
     } catch (e) {
       showToast(e.message || "Settings save failed");
     } finally {
@@ -302,7 +330,6 @@ export default function AdminDashboard() {
     <div style={styles.page}>
       <div style={styles.header}>
         <div>
-          {/* ✅ Simple heading (not highlighted) */}
           <h2 style={styles.h2}>Admin Dashboard</h2>
           <p style={styles.subText}>
             Manage users, recruiters, resumes, jobs, analytics, settings & logs
@@ -380,35 +407,51 @@ export default function AdminDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredUsers.map((u) => (
-                    <tr key={u._id}>
-                      <td style={styles.td}>{u.name || "-"}</td>
-                      <td style={styles.td}>{u.email || "-"}</td>
-                      <td style={styles.td}>
-                        <span style={badgeStyle(u.role)}>{u.role}</span>
-                      </td>
-                      <td style={styles.td}>
-                        {u.createdAt ? new Date(u.createdAt).toLocaleString() : "-"}
-                      </td>
-                      <td style={styles.td}>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <select
-                            style={styles.select}
-                            value={u.role}
-                            onChange={(e) => updateUserRole(u._id, e.target.value)}
-                          >
-                            <option value="admin">admin</option>
-                            <option value="recruiter">recruiter</option>
-                            <option value="jobseeker">jobseeker</option>
-                          </select>
+                  {filteredUsers.map((u) => {
+                    const isCurrentUser = currentUser?.email === u.email;
+                    const isAdminUser = u.role === "admin";
 
-                          <button style={styles.btnDanger} onClick={() => deleteUser(u._id)}>
-                            Delete
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                    return (
+                      <tr key={u._id}>
+                        <td style={styles.td}>{u.name || "-"}</td>
+                        <td style={styles.td}>{u.email || "-"}</td>
+                        <td style={styles.td}>
+                          <span style={badgeStyle(u.role)}>{u.role}</span>
+                        </td>
+                        <td style={styles.td}>
+                          {u.createdAt ? new Date(u.createdAt).toLocaleString() : "-"}
+                        </td>
+                        <td style={styles.td}>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <select
+                              style={styles.select}
+                              value={u.role}
+                              onChange={(e) => updateUserRole(u._id, u.role, e.target.value)}
+                            >
+                              <option value="admin">admin</option>
+                              <option value="recruiter">recruiter</option>
+                              <option value="jobseeker">jobseeker</option>
+                            </select>
+
+                            <button
+                              style={isAdminUser ? styles.btnDisabled : styles.btnDanger}
+                              onClick={() => deleteUser(u)}
+                              disabled={isAdminUser}
+                              title={
+                                isCurrentUser
+                                  ? "Current logged in user"
+                                  : isAdminUser
+                                  ? "Admin user cannot be deleted"
+                                  : "Delete user"
+                              }
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
 
                   {filteredUsers.length === 0 && (
                     <tr>
@@ -423,7 +466,6 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* ✅ RESUMES SCREENING RESULTS */}
         {tab === "resumes" && (
           <div>
             <div style={styles.rowBetween}>
@@ -482,7 +524,6 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* ✅ JOBS */}
         {tab === "jobs" && (
           <div>
             <div style={styles.rowBetween}>
@@ -557,7 +598,6 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* ✅ SETTINGS */}
         {tab === "settings" && (
           <div>
             <div style={styles.rowBetween}>
@@ -568,6 +608,42 @@ export default function AdminDashboard() {
             </div>
 
             <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
+              <div style={styles.toggleRow}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>Application Name</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+                    {settings.appName}
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.toggleRow}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>Environment</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+                    {settings.env}
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.toggleRow}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>Mongo Ready State</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+                    {settings.mongoReadyState}
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.toggleRow}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>Reset Enabled</div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+                    {settings.resetEnabled ? "Yes" : "No"}
+                  </div>
+                </div>
+              </div>
+
               <ToggleRow
                 label="Allow user registration"
                 value={settings.allowRegistration}
@@ -587,7 +663,6 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* ✅ LOGS */}
         {tab === "logs" && (
           <div>
             <div style={styles.rowBetween}>
@@ -668,6 +743,7 @@ function AnalyticsPanel({ analytics, onRefresh }) {
         <StatCard label="Job Seekers" value={analytics.totalJobSeekers} />
         <StatCard label="Jobs" value={analytics.totalJobs} />
         <StatCard label="Resumes" value={analytics.totalResumes} />
+        <StatCard label="Logs" value={analytics.totalLogs} />
         <StatCard label="Avg Match Score" value={`${analytics.avgScore}%`} />
       </div>
     </div>
@@ -725,7 +801,6 @@ function badgeStyle(type) {
   return base;
 }
 
-// ✅ UPDATED: Simple heading (reduced size + weight)
 const styles = {
   page: {
     padding: 24,
@@ -747,7 +822,6 @@ const styles = {
     marginBottom: 16,
   },
 
-  // ✅ SIMPLE Heading
   h2: { margin: 0, fontSize: 18, fontWeight: 600, color: "#111827" },
   h3: { margin: 0, fontSize: 15, fontWeight: 600, color: "#111827" },
   subText: { margin: "6px 0 0", color: "#6b7280", fontSize: 13 },
@@ -867,6 +941,17 @@ const styles = {
     background: "#dc2626",
     color: "#ffffff",
     cursor: "pointer",
+    fontWeight: 700,
+    fontSize: 13,
+  },
+
+  btnDisabled: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid #d1d5db",
+    background: "#e5e7eb",
+    color: "#6b7280",
+    cursor: "not-allowed",
     fontWeight: 700,
     fontSize: 13,
   },
