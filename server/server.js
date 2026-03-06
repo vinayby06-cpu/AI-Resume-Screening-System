@@ -694,3 +694,33 @@ app.use((err, req, res, next) => {
 /* ================== START ================== */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+// ================== ADMIN ANALYTICS ==================
+app.get("/api/admin/analytics", async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments();
+    const recruiters = await User.countDocuments({ role: "recruiter" });
+    const jobSeekers = await User.countDocuments({ role: "jobseeker" });
+    const jobs = await Job.countDocuments();
+    const resumes = await Resume.countDocuments();
+
+    const resumesData = await Resume.find();
+    const avgMatchScore =
+      resumesData.length === 0
+        ? 0
+        : resumesData.reduce((sum, r) => sum + (r.atsScore || 0), 0) /
+          resumesData.length;
+
+    res.json({
+      totalUsers,
+      recruiters,
+      jobSeekers,
+      jobs,
+      resumes,
+      avgMatchScore: Math.round(avgMatchScore),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Analytics fetch failed" });
+  }
+});
